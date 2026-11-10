@@ -237,12 +237,14 @@ function spawnTarget(p, cli) {
   const ext = path.extname(p).toLowerCase();
   if (ext === '.exe' || ext === '.com') return { bin: p, args: [] };
   if (ext === '.cmd' || ext === '.bat') {
-    const exe = shimExe(p);
-    if (exe) return { bin: exe, args: [] };
+    // A cli router tries the node script first: npm's template names a node.exe beside the shim, and taking
+    // that .exe would drop the script path.
     if (cli) {
       const script = shimNodeScript(p);
       if (script) return { bin: process.execPath, args: [script] };
     }
+    const exe = shimExe(p);
+    if (exe) return { bin: exe, args: [] };
   }
   return null;
 }

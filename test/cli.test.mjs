@@ -375,6 +375,39 @@ test('R3: a .cmd node shim runs process.execPath with the script path', { skip: 
   assert.match(String(res.stdout), /SHIM-ANSWER/);
 });
 
+test('R3: an npm shim with a node.exe beside it still runs the script', { skip: process.platform !== 'win32' }, () => {
+  const shimDir = newCaseDir('r3-shim-nodeexe');
+  const packageBin = path.join(shimDir, 'node_modules', '@scope', 'pkg', 'bin');
+  fs.mkdirSync(packageBin, { recursive: true });
+  fs.copyFileSync(FIXTURE, path.join(packageBin, 'tool.js'));
+  fs.writeFileSync(path.join(shimDir, 'node.exe'), 'not a real program'); // taking this file instead of the script fails the run
+  const shim = path.join(shimDir, 'tool.cmd');
+  fs.writeFileSync(
+    shim,
+    [
+      '@ECHO off',
+      'SET dp0=%~dp0',
+      'IF EXIST "%dp0%\\node.exe" (',
+      '  SET "_prog=%dp0%\\node.exe"',
+      ') ELSE (',
+      '  SET "_prog=node"',
+      ')',
+      '"%_prog%"  "%dp0%\\node_modules\\@scope\\pkg\\bin\\tool.js" %*',
+      '',
+    ].join('\r\n'),
+    'utf8',
+  );
+
+  const s = setup('r3-nodeexe', routingWith('codex', {
+    type: 'cli',
+    bin: [shim],
+    args: ['--fake-stdout', 'SHIM-NODEEXE-ANSWER'],
+  }));
+  const res = runIn(s);
+  assert.equal(res.status, 0, output(res));
+  assert.match(String(res.stdout), /SHIM-NODEEXE-ANSWER/);
+});
+
 /* R4 ------------------------------------------------------------------ */
 
 test('R4: an unavailable cli router is skipped with the candidate names', () => {
