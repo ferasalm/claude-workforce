@@ -1,7 +1,7 @@
 {
   "version": 2,
   "updated": "2026-11-10",
-  "how_to_edit": "This is the ONLY place that names non-Claude models. Skills, agents and docs refer to kinds (trivial, scout-light, ...) and never to a model. A route is one way to reach a model: {router, id}. Routes inside a model are tried in order, free ones first. Edit a pick list when your data or decision changes; run `node tools/worker.mjs route` to check the result and `node tools/worker.mjs doctor` to see which routes can run on this machine. Routes marked \"verified\": false carry provisional model ids: check them against the provider's model list. Each change gets one line in `changelog` below.",
+  "how_to_edit": "This is the ONLY place that names non-Claude models. Skills, agents and docs refer to kinds (trivial, scout-light, ...) and never to a model. A route is one way to reach a model: {router, id}. Routes inside a model are tried in order, free ones first. Edit a pick list when your data or decision changes; run `node tools/worker.mjs route` to check the result and `node tools/worker.mjs doctor` to see which routes can run on this machine. Routes marked \"verified\": false carry provisional model ids: check them against the provider's model list. Each change gets one line in `changelog` below. A router of type `cli` describes a command-line harness by data (bin, args, writeArgs, placeholders); docs/providers.md explains the fields.",
   "routers": {
     "nvidia": {
       "type": "http",
@@ -22,7 +22,7 @@
       "baseUrl": "https://openrouter.ai/api/v1",
       "keyEnv": "OPENROUTER_API_KEY",
       "signup": "https://openrouter.ai/keys",
-      "free": "only :free models"
+      "free": "only :free models: 20 requests a minute and 50 a day, or 1,000 a day once the account has bought 10 USD of credits"
     },
     "cloudflare": {
       "type": "http",
@@ -44,6 +44,31 @@
     },
     "claude": {
       "type": "claude"
+    },
+    "codex": {
+      "type": "cli",
+      "bin": ["codex"],
+      "binEnv": "CODEX_BIN",
+      "args": ["exec", "-m", "{id}", "-c", "model_reasoning_effort={effort}", "-c", "web_search=live", "-s", "read-only", "--skip-git-repo-check", "--ephemeral", "--color", "never", "-C", "{dir}", "-o", "{out}", "-"],
+      "writeArgs": ["exec", "-m", "{id}", "-c", "model_reasoning_effort={effort}", "-s", "workspace-write", "--skip-git-repo-check", "--ephemeral", "--color", "never", "-C", "{dir}", "-o", "{out}", "-"],
+      "stdin": true,
+      "defaultEffort": "medium",
+      "slots": 1,
+      "install": "npm i -g @openai/codex, then `codex login`",
+      "free": "uses the Codex allowance of your ChatGPT plan; no API key",
+      "note": "OpenAI Codex CLI. The operating system enforces the sandbox: read-only (with web search) for scouts, writes confined to --dir for builders. It runs with your own Codex config (on Windows the sandbox setting lives there). About 20 to 50 s per call."
+    },
+    "hermes": {
+      "type": "cli",
+      "bin": ["hermes", "${LOCALAPPDATA}/hermes/bin/hermes.exe"],
+      "binEnv": "HERMES_BIN",
+      "args": ["chat", "--query-file", "{briefFile}", "-Q", "--oneshot", "--ignore-rules", "--provider", "nous", "-m", "{id}", "--max-turns", "4", "-t", "todo", "--in", "{dir}"],
+      "fileAccess": false,
+      "strip": ["^session_id: .*$"],
+      "slots": 1,
+      "install": "install Hermes Agent, then `hermes model` to sign in to Nous Portal",
+      "free": "the free models of Nous Portal (they rotate); 50 requests a minute",
+      "note": "Nous Hermes Agent as a text-only worker: one harmless toolset, no terminal and no file tools, so it cannot write. Files named with --files are packed into the prompt. Nous may keep prompts unless Privacy Mode is on."
     }
   },
   "models": {
@@ -155,6 +180,69 @@
           "verified": true
         }
       ]
+    },
+    "nemotron-vl-free": {
+      "family": "nvidia",
+      "good_at": "trivial work on long or structured input: extraction as JSON, reformatting, reading screenshots (it accepts images)",
+      "weak_at": "judgement",
+      "speed": "fast",
+      "routes": [
+        {
+          "router": "opencode",
+          "id": "openrouter/nvidia/nemotron-3.5-super-vl:free",
+          "verified": true
+        },
+        {
+          "router": "openrouter",
+          "id": "nvidia/nemotron-3.5-super-vl:free",
+          "verified": true
+        }
+      ]
+    },
+    "north-code-free": {
+      "family": "cohere",
+      "good_at": "code-shaped trivial work: commit messages, small diffs, renames",
+      "weak_at": "judgement and reasoning; untested as a builder",
+      "speed": "fast",
+      "routes": [
+        {
+          "router": "opencode",
+          "id": "openrouter/cohere/north-mini-code:free",
+          "verified": true
+        },
+        {
+          "router": "openrouter",
+          "id": "cohere/north-mini-code:free",
+          "verified": true
+        }
+      ]
+    },
+    "gpt-luna": {
+      "family": "openai",
+      "good_at": "agent work inside an OS sandbox: web lookups with sources, read-only scouting, building against locked tests in a worktree",
+      "weak_at": "reasoning depth: below the other builders unless effort is max; plan limits are not published",
+      "speed": "medium",
+      "routes": [
+        {
+          "router": "codex",
+          "id": "gpt-6-luna",
+          "verified": true
+        }
+      ]
+    },
+    "longcat-free": {
+      "family": "meituan",
+      "good_at": "a text-only second opinion from a separate provider and quota: trivial briefs, review of a packed diff",
+      "weak_at": "no file access, no writes; a temporary free offer",
+      "speed": "medium",
+      "routes": [
+        {
+          "router": "hermes",
+          "id": "meituan/longcat-2.5:free",
+          "verified": true,
+          "note": "Nous announced this model as free for one week from 2026-11-06; when the id stops answering, the route fails and the ladder moves on. Replace it with the current free Nous model."
+        }
+      ]
     }
   },
   "claude_agents": {
@@ -201,6 +289,15 @@
           "model": "nemotron-free"
         },
         {
+          "model": "nemotron-vl-free"
+        },
+        {
+          "model": "north-code-free"
+        },
+        {
+          "model": "longcat-free"
+        },
+        {
           "model": "gemini-flash",
           "effort": "low"
         },
@@ -217,6 +314,9 @@
         {
           "model": "gemini-flash",
           "effort": "low"
+        },
+        {
+          "model": "nemotron-vl-free"
         },
         {
           "model": "deepseek-flash"
@@ -237,6 +337,10 @@
         },
         {
           "model": "deepseek-flash"
+        },
+        {
+          "model": "gpt-luna",
+          "effort": "xhigh"
         },
         {
           "claude": "scout"
@@ -269,6 +373,10 @@
           "effort": "max"
         },
         {
+          "model": "gpt-luna",
+          "effort": "max"
+        },
+        {
           "claude": "builder"
         },
         {
@@ -287,6 +395,10 @@
           "model": "glm-flash"
         },
         {
+          "model": "gpt-luna",
+          "effort": "high"
+        },
+        {
           "claude": "builder"
         }
       ],
@@ -294,7 +406,7 @@
     }
   },
   "review": {
-    "rule": "Every builder result gets a reviewer of the same tier and a different model family. Nice, not required: let EQ review IQ work and IQ review EQ work. The reviewer is read-only and receives the diff and the pass condition, never the builder's reasoning. The implementer never reviews its own work.",
+    "rule": "Every builder result gets a reviewer of the same tier and a different model family. Nice, not required: let EQ review IQ work and IQ review EQ work. The reviewer is read-only and receives the diff and the pass condition, never the builder's reasoning. The implementer never reviews its own work. A model from a third family may review instead: a sandboxed agent read-only in the worktree, or a text-only model that gets the diff and the pass condition packed with `worker.mjs ask <alias> <brief> --files <diff>`.",
     "pairs": {
       "builder-iq": "builder-eq",
       "builder-eq": "builder-iq"
@@ -310,6 +422,8 @@
     "2026-11-10: first public version. Route ids are provisional (verified: false).",
     "2026-11-10: model ids checked against NVIDIA build, OpenRouter and Cloudflare model pages (all verified); added the free OpenRouter GLM route; Cloudflare GLM flash marked as deprecating 2026-11-20.",
     "2026-11-10: nvidia patience (8 attempts, 300s first token, 1200s total) because NIM cold starts often need 5-10 minutes and several reconnects before the first token.",
-    "2026-11-10: OpenCode 2 routes first for deepseek-flash and glm-flash (agents that read, edit and test); opencode bin is [opencode2, opencode]; OpenCode 1 is refused by a version check; NVIDIA GLM confirmed on OpenCode; the free OpenRouter GLM id is not listed by OpenCode 2.2.2, so no OpenCode route was added for it."
+    "2026-11-10: OpenCode 2 routes first for deepseek-flash and glm-flash (agents that read, edit and test); opencode bin is [opencode2, opencode]; OpenCode 1 is refused by a version check; NVIDIA GLM confirmed on OpenCode; the free OpenRouter GLM id is not listed by OpenCode 2.2.2, so no OpenCode route was added for it.",
+    "2026-11-10: nemotron-vl-free and north-code-free (free on OpenRouter; both passed a two-line probe, in 9 s and 4 s) added to trivial, nemotron-vl-free also to scout-light. OpenRouter free quota noted: 50 requests a day, 1,000 once the account has bought 10 USD of credits.",
+    "2026-11-10: router type `cli` (a command-line harness described by data). Routers codex (GPT-6 Luna in an OS sandbox) and hermes (LongCat-2.5 on Nous Portal, text only). gpt-luna is a fallback before the Claude worker in scout-deep, builder-iq (max effort) and builder-eq; it is NOT a test writer, because its Intelligence Index (28 at max effort, lower at lower efforts) is below the builder it would check. longcat-free is a trivial fallback on a separate quota and an optional reviewer of a packed diff; its free offer is temporary. Probes: Luna 20 to 50 s, LongCat 17 s, both correct; one of three Luna write runs lost its tool host and wrote nothing (the no-files-changed check catches that)."
   ]
 }

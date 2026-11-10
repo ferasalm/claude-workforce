@@ -171,6 +171,7 @@ function routeInfo(R, route) {
   if (type === 'http') return { mode: 'http', id };
   if (type === 'agy') return { mode: 'agy', id };
   if (type === 'opencode') return { mode: 'oc', id };
+  if (type === 'cli') return { mode: 'cli', id };
   if (type === 'claude') return { mode: 'claude', id };
   return { mode: 'unknown', id };
 }
@@ -213,15 +214,47 @@ function shimExe(file) {
   return null;
 }
 
-function spawnable(p) {
-  if (process.platform !== 'win32') return p;
-  const ext = path.extname(p).toLowerCase();
-  if (ext === '.exe' || ext === '.com') return p;
-  if (ext === '.cmd' || ext === '.bat') return shimExe(p);
+// npm installs a JavaScript CLI behind a .cmd shim that runs the script with node, in the form
+//   "%dp0%\node_modules\@scope\pkg\bin\tool.js" %*
+// A cli router can run such a shim as process.execPath <script> ...; agy/opencode still need a real .exe.
+function shimNodeScript(file) {
+  let text = '';
+  try { text = fs.readFileSync(file, 'utf8'); } catch { return null; }
+  const dir = path.dirname(file);
+  const expand = (s) => s
+    .replace(/%~dp0%?|%dp0%/gi, dir + path.sep)
+    .replace(/%([A-Za-z0-9_]+)%/g, (m, v) => process.env[v] || process.env[v.toUpperCase()] || m);
+  for (const m of text.matchAll(/"([^"\r\n]+?\.(?:js|cjs|mjs))"|(\S+?\.(?:js|cjs|mjs))\b/gi)) {
+    const p = path.normalize(expand(m[1] || m[2]));
+    if (path.isAbsolute(p) && fileExists(p)) return p;
+  }
   return null;
 }
 
-function which(name) {
+// A spawn target is the program plus any arguments that must come before the router's own arguments.
+function spawnTarget(p, cli) {
+  if (process.platform !== 'win32') return { bin: p, args: [] };
+  const ext = path.extname(p).toLowerCase();
+  if (ext === '.exe' || ext === '.com') return { bin: p, args: [] };
+  if (ext === '.cmd' || ext === '.bat') {
+    // A cli router tries the node script first: npm's template names a node.exe beside the shim, and taking
+    // that .exe would drop the script path.
+    if (cli) {
+      const script = shimNodeScript(p);
+      if (script) return { bin: process.execPath, args: [script] };
+    }
+    const exe = shimExe(p);
+    if (exe) return { bin: exe, args: [] };
+  }
+  return null;
+}
+
+function spawnable(p) {
+  const target = spawnTarget(p, false);
+  return target ? target.bin : null;
+}
+
+function whichTarget(name, cli) {
   const dirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
   const isWin = process.platform === 'win32';
   const hasExt = path.extname(name) !== '';
@@ -232,19 +265,53 @@ function which(name) {
     for (const ext of exts) {
       const candidate = path.join(d, name + ext);
       if (!fileExists(candidate)) continue;
-      const usable = spawnable(candidate);
-      if (usable) return usable;
+      const target = spawnTarget(candidate, cli);
+      if (target) return target;
     }
   }
   return null;
 }
 
-// A router's bin is one name/path or an array tried in order. With no bin and no env override,
-// OpenCode tries opencode2 then opencode (OpenCode 2 installs both).
+function which(name) {
+  const target = whichTarget(name, false);
+  return target ? target.bin : null;
+}
+
+function expandBinEntry(entry) {
+  const text = String(entry);
+  let missing = false;
+  const expanded = text.replace(/\$\{([A-Za-z0-9_]+)\}/g, (_, n) => {
+    const value = process.env[n];
+    if (value === undefined || value === '') {
+      missing = true;
+      return '';
+    }
+    return value;
+  });
+  return missing ? null : expanded;
+}
+
+// A router's bin is one name/path or an array tried in order. A cli router may name its environment
+// override with binEnv and expand ${NAME} from the environment; an entry naming an unset variable is
+// skipped. With no bin and no env override, OpenCode tries opencode2 then opencode (OpenCode 2 installs both).
 function binCandidates(R, name, mode) {
+  const cfg = routerConfig(R, name);
+  if (mode === 'cli') {
+    const envName = cfg && cfg.binEnv;
+    if (envName && process.env[envName]) return [String(process.env[envName])];
+    const raw = cfg && cfg.bin;
+    const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
+    const expanded = [];
+    for (const entry of list) {
+      const value = expandBinEntry(entry);
+      if (value !== null) expanded.push(value);
+    }
+    if (expanded.length) return expanded;
+    if (list.length) return list.map(String);
+    return [name];
+  }
   const envName = BIN_ENV[programKey(mode)];
   if (envName && process.env[envName]) return [process.env[envName]];
-  const cfg = routerConfig(R, name);
   const raw = cfg && cfg.bin;
   const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
   if (list.length) return list.map(String);
@@ -255,19 +322,29 @@ function programCandidate(R, name, mode) {
   return binCandidates(R, name, mode).join(' or ');
 }
 
-function binPath(bin) {
+function binTarget(bin, cli) {
   if (path.isAbsolute(bin) || /^[A-Za-z]:/.test(bin) || bin.includes('/') || bin.includes('\\')) {
-    return fileExists(bin) ? spawnable(bin) : null;
+    return fileExists(bin) ? spawnTarget(bin, cli) : null;
   }
-  return which(bin);
+  return whichTarget(bin, cli);
+}
+
+function binPath(bin) {
+  const target = binTarget(bin, false);
+  return target ? target.bin : null;
+}
+
+function programTarget(R, name, mode) {
+  for (const bin of binCandidates(R, name, mode)) {
+    const target = binTarget(bin, mode === 'cli');
+    if (target) return target;
+  }
+  return null;
 }
 
 function programPath(R, name, mode) {
-  for (const bin of binCandidates(R, name, mode)) {
-    const p = binPath(bin);
-    if (p) return p;
-  }
-  return null;
+  const target = programTarget(R, name, mode);
+  return target ? target.bin : null;
 }
 
 // ---------------------------------------------------------------- OpenCode version gate
@@ -307,7 +384,7 @@ function routeAvailability(R, route, opts = {}) {
     const miss = httpMissing(R, route.router);
     return miss ? { ok: false, reason: `missing ${miss}` } : { ok: true };
   }
-  if (info.mode === 'agy' || info.mode === 'oc') {
+  if (info.mode === 'agy' || info.mode === 'oc' || info.mode === 'cli') {
     if (process.env.WORKER_FAKE_CLI && !opts.doctor) return { ok: true };
     const bin = programPath(R, route.router, info.mode);
     if (!bin) {
@@ -322,7 +399,11 @@ function routeAvailability(R, route, opts = {}) {
   return { ok: false, reason: 'unknown router type' };
 }
 
-function effortFor(pick, model, mode, override) {
+function effortFor(pick, model, mode, override, cfg) {
+  if (mode === 'cli') {
+    return (pick && pick.effort) || (model && model.effort) || override
+      || (cfg && cfg.defaultEffort) || 'medium';
+  }
   return override || (pick && pick.effort) || (model && model.effort) || (mode === 'agy' ? 'low' : undefined);
 }
 
@@ -346,7 +427,11 @@ function pickStr(R, p) {
     return `claude:${p.claude} (${a.model || '?'} ${a.effort || '?'})`;
   }
   const m = (R.models && R.models[p.model]) || { routes: [] };
-  return `${p.model}(${p.effort || m.effort || 'default'}) via ${(m.routes || []).map((r) => r.router).join('>')}`;
+  const via = (m.routes || []).map((r) => {
+    const info = routeInfo(R, r);
+    return info.mode === 'cli' && info.id ? `${r.router}:${info.id}` : r.router;
+  }).join('>');
+  return `${p.model}(${p.effort || m.effort || 'default'}) via ${via}`;
 }
 
 function nextLine(R, name, file) {
@@ -797,21 +882,27 @@ async function httpAttempt(R, route, ctx) {
 }
 
 // ---------------------------------------------------------------- child processes
-function runChild(bin, childArgs, cwd, seconds = timeoutSec) {
+function runChild(bin, childArgs, cwd, seconds = timeoutSec, opts = {}) {
   return new Promise((resolve) => {
     const isWin = process.platform === 'win32';
+    const stdinText = opts.stdinText === undefined ? null : opts.stdinText;
     let child;
     try {
       child = spawn(bin, childArgs, {
         cwd,
         env: { ...process.env, PWD: cwd },
         windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: [stdinText === null ? 'ignore' : 'pipe', 'pipe', 'pipe'],
         detached: !isWin,
       });
     } catch (e) {
       resolve({ code: 126, out: String(e), timedOut: false });
       return;
+    }
+    if (stdinText !== null) {
+      // Write the whole prompt, then close standard input so a reader sees end-of-file.
+      child.stdin.on('error', () => { /* The child may exit before reading. */ });
+      child.stdin.end(stdinText);
     }
     let out = '';
     let settled = false;
@@ -857,8 +948,8 @@ function alive(pid) {
   }
 }
 
-async function acquireSlot(name, seconds) {
-  const count = SLOT_COUNTS[name] || 1;
+async function acquireSlot(name, seconds, slots) {
+  const count = Number.isInteger(slots) && slots >= 1 ? slots : (SLOT_COUNTS[name] || 1);
   fs.mkdirSync(SLOT_DIR, { recursive: true });
   const started = Date.now();
   let announced = false;
@@ -919,8 +1010,121 @@ async function acquireSlot(name, seconds) {
   }
 }
 
+function fillPlaceholders(arg, values) {
+  let text = String(arg);
+  for (const [key, value] of Object.entries(values)) text = text.split(`{${key}}`).join(String(value));
+  return text;
+}
+
+function applyStrip(text, patterns) {
+  let s = String(text ?? '');
+  for (const re of patterns) s = s.replace(re, '');
+  return s;
+}
+
+// A cli router's strip list is compiled before the program runs: a bad pattern is a configuration error.
+function stripPatternsFor(cfg, name) {
+  const raw = cfg && cfg.strip;
+  const list = raw === undefined || raw === null ? [] : (Array.isArray(raw) ? raw : [raw]);
+  return list.map((pattern) => {
+    try {
+      return new RegExp(String(pattern), 'gm');
+    } catch (e) {
+      die(`router ${name}: invalid strip pattern ${JSON.stringify(pattern)}: ${e.message}`);
+    }
+  });
+}
+
+function slotCountFor(cfg, name) {
+  const raw = cfg && cfg.slots;
+  if (raw === undefined) return 1;
+  if (!Number.isInteger(raw) || raw < 1) die(`router ${name}: slots must be an integer >= 1`);
+  return raw;
+}
+
+// A cli router may set timeoutSec on the route or on the router configuration.
+function cliTimeoutFor(R, route) {
+  if (route && route.timeoutSec !== undefined) return routeTimeout(route);
+  const cfg = routerConfig(R, route.router) || {};
+  if (cfg.timeoutSec !== undefined) return routeTimeout({ router: route.router, timeoutSec: cfg.timeoutSec });
+  return timeoutSec;
+}
+
+async function cliRouterAttempt(R, route, ctx) {
+  const name = route.router;
+  const cfg = routerConfig(R, name) || {};
+  const secs = cliTimeoutFor(R, route);
+  const patterns = stripPatternsFor(cfg, name);
+  const slots = slotCountFor(cfg, name);
+  const isWrite = !!ctx.write;
+  const rawArgs = isWrite ? cfg.writeArgs : cfg.args;
+  const argList = Array.isArray(rawArgs) ? rawArgs.map(String) : [];
+  // fileAccess false: the program cannot read the folder, so pack the files into the prompt as for http.
+  const promptText = cfg.fileAccess === false ? ctx.userText() : ctx.brief;
+  const release = await acquireSlot(name, secs, slots);
+  let tmpDir = null;
+  try {
+    const fake = process.env.WORKER_FAKE_CLI;
+    if (fake) {
+      const sleepMs = numberEnv('WORKER_FAKE_CLI_SLEEP_MS', 0);
+      const timeoutMs = secs * 1000;
+      if (sleepMs >= timeoutMs) {
+        await sleep(timeoutMs);
+        return { ok: false, reason: `timed out after ${secs}s` };
+      }
+      if (sleepMs > 0) await sleep(sleepMs);
+      try {
+        return { ok: true, out: applyStrip(fs.readFileSync(fake, 'utf8'), patterns) };
+      } catch (e) {
+        return { ok: false, reason: `fake cli read failed: ${e.message}` };
+      }
+    }
+    const target = programTarget(R, name, 'cli');
+    if (!target) return { ok: false, reason: `not installed (${programCandidate(R, name, 'cli')})` };
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'worker-cli-'));
+    const briefFile = path.join(tmpDir, 'brief.txt');
+    const outFile = path.join(tmpDir, 'out.txt');
+    fs.writeFileSync(briefFile, promptText, 'utf8');
+    fs.writeFileSync(outFile, '', 'utf8');
+    const usedOut = argList.some((arg) => arg.includes('{out}'));
+    const values = {
+      id: ctx.info.id,
+      effort: ctx.eff || 'medium',
+      dir: ctx.dir,
+      out: outFile,
+      briefFile,
+      brief: promptText,
+    };
+    const childArgs = argList.map((arg) => fillPlaceholders(arg, values));
+    const res = await runChild(target.bin, [...target.args, ...childArgs], ctx.dir, secs, {
+      stdinText: cfg.stdin ? promptText : null,
+    });
+    if (res.timedOut) return { ok: false, reason: `timed out after ${secs}s` };
+    if (res.code !== 0) {
+      const tailText = oneLine(strip(res.out || '')).slice(-200);
+      return { ok: false, reason: `exit ${res.code}${tailText ? ': ' + tailText : ''}` };
+    }
+    let answer = res.out;
+    if (usedOut) {
+      try {
+        const fromOut = fs.readFileSync(outFile, 'utf8');
+        if (fromOut.length) answer = fromOut;
+      } catch {
+        // No answer file: keep the captured output.
+      }
+    }
+    return { ok: true, out: applyStrip(answer, patterns) };
+  } finally {
+    if (tmpDir) {
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* Best effort. */ }
+    }
+    release();
+  }
+}
+
 async function cliAttempt(R, route, ctx) {
   const info = ctx.info;
+  if (info.mode === 'cli') return cliRouterAttempt(R, route, ctx);
   const name = info.mode === 'agy' ? 'agy' : 'opencode';
   const secs = routeTimeout(route);
   const release = await acquireSlot(name, secs);
@@ -1126,6 +1330,17 @@ async function attemptRoute(R, route, ctx) {
   if (FAIL_ROUTERS.includes(route.router)) {
     return { ok: false, reason: 'forced failure (test hook)' };
   }
+  if (info.mode === 'cli' && ctx.write) {
+    const cfg = routerConfig(R, route.router) || {};
+    if (cfg.fileAccess === false) {
+      console.error(`[worker] skip ${route.router}: no file access`);
+      return { ok: false, skip: true };
+    }
+    if (!cfg.writeArgs) {
+      console.error(`[worker] skip ${route.router}: read-only router (no writeArgs)`);
+      return { ok: false, skip: true };
+    }
+  }
   const avail = routeAvailability(R, route);
   if (!avail.ok) {
     console.error(`[worker] skip ${route.router}: ${avail.reason}`);
@@ -1134,7 +1349,7 @@ async function attemptRoute(R, route, ctx) {
   const before = ctx.write ? ctx.snapshot() : null;
   let res;
   if (info.mode === 'http') res = await httpAttempt(R, route, ctx);
-  else if (info.mode === 'oc' || info.mode === 'agy') res = await cliAttempt(R, route, ctx);
+  else if (info.mode === 'oc' || info.mode === 'agy' || info.mode === 'cli') res = await cliAttempt(R, route, ctx);
   else res = { ok: false, reason: `unknown router type for ${route.router}` };
   if (!res.ok) return { ok: false, reason: res.reason };
 
@@ -1160,7 +1375,7 @@ async function walkRoutes(R, pick, model, routes, ctx) {
   let tried = 0;
   for (const route of routes) {
     const info = routeInfo(R, route);
-    const eff = effortFor(pick, model, info.mode, ctx.effortOverride);
+    const eff = effortFor(pick, model, info.mode, ctx.effortOverride, routerConfig(R, route.router));
     const displayId = routeIdFor(info, eff);
     const res = await attemptRoute(R, route, { ...ctx, info, eff, displayId });
     if (res.skip) continue;
@@ -1191,8 +1406,8 @@ function commandDoctor() {
       const miss = httpMissing(R, name);
       if (miss) console.log(`router ${name}: NO KEY (${miss}) -> ${(cfg && cfg.signup) || ''}`.trimEnd());
       else console.log(`router ${name}: READY`);
-    } else if (type === 'agy' || type === 'opencode') {
-      const mode = type === 'agy' ? 'agy' : 'oc';
+    } else if (type === 'agy' || type === 'opencode' || type === 'cli') {
+      const mode = type === 'agy' ? 'agy' : type === 'cli' ? 'cli' : 'oc';
       const bin = programPath(R, name, mode);
       if (!bin) {
         console.log(`router ${name}: NOT INSTALLED (${programCandidate(R, name, mode)})`);
@@ -1304,7 +1519,7 @@ function printDryRun(R, kind, isWrite, briefFile) {
     if (!m) continue;
     for (const route of m.routes || []) {
       const info = routeInfo(R, route);
-      const eff = effortFor(p, m, info.mode);
+      const eff = effortFor(p, m, info.mode, undefined, routerConfig(R, route.router));
       const displayId = routeIdFor(info, eff);
       const avail = routeAvailability(R, route);
       let line = `[worker] would try ${p.model} route ${route.router} id=${displayId} effort=${eff || 'default'} mode=${info.mode} ${isWrite ? 'WRITE' : 'read-only'}`;

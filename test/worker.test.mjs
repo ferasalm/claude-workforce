@@ -31,7 +31,7 @@ const lastLine = (s) => strip(s).trimEnd().split(/\r?\n/).at(-1) || '';
 const norm = (p) => path.resolve(p).replace(/\\/g, '/');
 const slash = (s) => String(s).replace(/\\/g, '/');
 after(() => { for (const d of temps) { try { fs.rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch { /* best effort */ } } });
-const envFor = (extra = {}) => ({ ...Object.fromEntries(Object.entries(process.env).filter(([k]) => { const u = k.toUpperCase(); return !BLOCKED.has(u) && !u.startsWith('WORKER_'); })), HOME, USERPROFILE: HOME, ...extra });
+const envFor = (extra = {}) => ({ ...Object.fromEntries(Object.entries(process.env).filter(([k]) => { const u = k.toUpperCase(); return !BLOCKED.has(u) && !u.startsWith('WORKER_'); })), HOME, USERPROFILE: HOME, CODEX_BIN: missing('codex'), HERMES_BIN: missing('hermes'), ...extra });
 const run = (args, { cwd = ROOT, env = {} } = {}) => { const r = spawnSync(process.execPath, [WORKER, ...args], { env: envFor(env), cwd, encoding: 'utf8', timeout: 60000 }); return { status: r.status, stdout: strip(r.stdout), stderr: strip(r.stderr), all: strip((r.stdout || '') + (r.stderr || '')) }; };
 function gitRepo() {
   const dir = newDir('git-');
@@ -44,7 +44,7 @@ function gitRepo() {
   return dir;
 }
 const gitStatus = (dir) => execFileSync('git', ['status', '--porcelain'], { cwd: dir, encoding: 'utf8' });
-const pickLabel = (R, p) => p.claude ? `claude:${p.claude} (${R.claude_agents[p.claude].model} ${R.claude_agents[p.claude].effort})` : `${p.model}(${p.effort || R.models[p.model].effort || 'default'}) via ${R.models[p.model].routes.map((r) => r.router).join('>')}`;
+const pickLabel = (R, p) => p.claude ? `claude:${p.claude} (${R.claude_agents[p.claude].model} ${R.claude_agents[p.claude].effort})` : `${p.model}(${p.effort || R.models[p.model].effort || 'default'}) via ${R.models[p.model].routes.map((r) => (R.routers[r.router] && R.routers[r.router].type === 'cli' ? r.router + ':' + r.id : r.router)).join('>')}`;
 const hasWouldTry = (lines, prefix) => lines.some((l) => l === prefix || l.startsWith(`${prefix} [would skip:`));
 
 describe('worker.mjs doctor', () => {
@@ -85,7 +85,7 @@ describe('worker.mjs routing', () => {
       const want = `${kind}\t${k.tier}\t${k.picks.map((p) => pickLabel(V2, p)).join(' | ')}`;
       assert.ok(lines.includes(want), `missing route line: ${want}\n${r.stdout}`);
     }
-    const want = 'builder-iq\t3b\tdeepseek-flash(max) via opencode>opencode>nvidia>cloudflare>openrouter | claude:builder (haiku xhigh) | gemini-flash(high) via agy';
+    const want = 'builder-iq\t3b\tdeepseek-flash(max) via opencode>opencode>nvidia>cloudflare>openrouter | gpt-luna(max) via codex:gpt-6-luna | claude:builder (haiku xhigh) | gemini-flash(high) via agy';
     const d = run(['route', 'builder-iq']);
     assert.equal(d.status, 0, d.all);
     assert.equal(d.stdout.split('\n')[0], want);

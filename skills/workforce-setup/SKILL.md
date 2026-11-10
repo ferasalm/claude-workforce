@@ -1,6 +1,6 @@
 ---
 name: workforce-setup
-description: Set up and check the worker routes of the claude-workforce skills. Use when the user asks to set up the workforce, check which workers work, add a provider, API key or aggregator (OpenRouter, NVIDIA, Cloudflare, Antigravity, OpenCode), change which model serves a kind of work, or when a worker run failed with "NO KEY" or "NOT INSTALLED". Not needed for normal work.
+description: Set up and check the worker routes of the claude-workforce skills. Use when the user asks to set up the workforce, check which workers work, add a provider, API key or aggregator (OpenRouter, NVIDIA, Cloudflare, Antigravity, OpenCode), or a command-line program (for example the `codex` or `hermes` router), change which model serves a kind of work, or when a worker run failed with "NO KEY" or "NOT INSTALLED". Not needed for normal work.
 ---
 
 # Workforce setup
@@ -30,6 +30,16 @@ A kind whose only runnable pick is a Claude agent still works (the lead spawns t
 3. Run `doctor` again. The router should now say `READY`.
 4. Smoke test, meaning one cheap call that shows the route works: write a one-line brief to a file, then run `node {{SKILLS_DIR}}/lean-orchestrator/tools/worker.mjs ask <model alias> <brief file> --router <name>`. A model id the provider does not know gives an error such as HTTP 400 or 404: look up the exact id in the provider's model list, fix `id` in `routing.json`, and run the test again. Ids marked `"verified": false` in the shipped file are best guesses; set it to `true` once a smoke test passes.
 5. Add one line to `changelog` in `routing.json`: date, what changed, why.
+
+## 2b. Add a command-line harness (cli router)
+
+1. Ask the user for the program's non-interactive command: the command that runs one prompt and exits. Ask for the environment variable that may override its path (`binEnv`), if it has one.
+2. Ask for its read-only flag and its write flag. Never guess a flag. Read the program's help (`<program> --help`, or `<program> <subcommand> --help`) and quote the flags it lists.
+3. Write the router under `routers` with `"type": "cli"`: `bin` (the program name), `binEnv`, `args` (the read-only run, using placeholders such as `{id}`, `{dir}`, `{briefFile}` or `{brief}`, and `{out}` for a file the program writes its answer to), `writeArgs` (only if the program can write; without it builder kinds skip the router), `stdin` (true when the prompt goes on standard input), `fileAccess` (false when the program cannot read files), `install`, `free` and `note`. The full field and placeholder tables are in `docs/providers.md`.
+4. Add the model ids it serves as routes: `{ "router": "<name>", "id": "<model id from the program's own list>" }`.
+5. Run `doctor` again. The router should print `READY`; `NOT INSTALLED (<bin>)` means the program is not on the PATH.
+6. Smoke test with one cheap call, as in step 4 of section 2.
+7. Add one line to `changelog` in `routing.json`.
 
 ## 3. Change which worker serves a kind
 

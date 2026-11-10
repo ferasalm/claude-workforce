@@ -22,7 +22,7 @@ const newBrief = (text = 'Reply with PONG.') => write(path.join(T, `brief-${++se
 const newFake = (text) => write(path.join(T, `fake-${++seq}.txt`), text);
 const newDir = (prefix = 'dir-') => temp(`cw-sec-${prefix}`);
 const missing = (name) => path.join(T, `missing-${name}`);
-const envFor = (extra = {}) => ({ ...Object.fromEntries(Object.entries(process.env).filter(([k]) => { const u = k.toUpperCase(); return !BLOCKED.has(u) && !u.startsWith('WORKER_'); })), HOME, USERPROFILE: HOME, ...extra });
+const envFor = (extra = {}) => ({ ...Object.fromEntries(Object.entries(process.env).filter(([k]) => { const u = k.toUpperCase(); return !BLOCKED.has(u) && !u.startsWith('WORKER_'); })), HOME, USERPROFILE: HOME, CODEX_BIN: missing('codex'), HERMES_BIN: missing('hermes'), ...extra });
 const run = (args, { cwd = ROOT, env = {}, timeout = 15000 } = {}) => { const r = spawnSync(process.execPath, [WORKER, ...args], { env: envFor(env), cwd, encoding: 'utf8', timeout }); return { status: r.status, stdout: strip(r.stdout), stderr: strip(r.stderr), all: strip((r.stdout || '') + (r.stderr || '')) }; };
 after(() => { for (const d of temps) { try { fs.rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch { /* best effort */ } } });
 
@@ -139,6 +139,8 @@ function httpWrite(repo, blockPath, content = 'EVIL', briefText = 'Write one fil
       WORKER_FAKE_HTTP: newFake(answer),
       AGY_BIN: missing('agy'),
       OPENCODE_BIN: missing('opencode'),
+      CODEX_BIN: missing('codex'),
+      HERMES_BIN: missing('hermes'),
     },
   });
   return { brief, r };
@@ -216,7 +218,7 @@ describe('security: keys never reach saved output', () => {
     const brief = newBrief('Write the keyed file.');
     const answer = `The key is ${KEY}.\n=== FILE: src/keyed.txt ===\n${KEY}\n=== END FILE ===\n`;
     const r = run(['run', 'builder-iq', brief, '--write', '--dir', repo, '--no-claude'], {
-      env: { NVIDIA_API_KEY: KEY, WORKER_FAKE_HTTP: newFake(answer), AGY_BIN: missing('agy'), OPENCODE_BIN: missing('opencode') },
+      env: { NVIDIA_API_KEY: KEY, WORKER_FAKE_HTTP: newFake(answer), AGY_BIN: missing('agy'), OPENCODE_BIN: missing('opencode'), CODEX_BIN: missing('codex'), HERMES_BIN: missing('hermes') },
     });
     assert.equal(r.status, 0, r.all);
     assertNoKeyInSaved(brief);
