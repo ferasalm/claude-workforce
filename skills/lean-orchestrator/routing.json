@@ -39,7 +39,7 @@
     },
     "opencode": {
       "type": "opencode",
-      "bin": "opencode",
+      "bin": ["opencode2", "opencode"],
       "free": "uses your OpenCode providers"
     },
     "claude": {
@@ -73,6 +73,18 @@
       "effort": "max",
       "routes": [
         {
+          "router": "opencode",
+          "id": "cloudflare-workers-ai/@cf/deepseek-ai/deepseek-v4.1-flash-1017",
+          "verified": true
+        },
+        {
+          "router": "opencode",
+          "id": "nvidia/deepseek-ai/deepseek-v4.1-flash",
+          "timeoutSec": 1800,
+          "verified": true,
+          "note": "NIM cold starts are slow; the route waits up to 30 minutes"
+        },
+        {
           "router": "nvidia",
           "id": "deepseek-ai/deepseek-v4.1-flash",
           "verified": true
@@ -95,6 +107,18 @@
       "weak_at": "speed",
       "speed": "slow",
       "routes": [
+        {
+          "router": "opencode",
+          "id": "nvidia/z-ai/glm-5.3-flash",
+          "timeoutSec": 1800,
+          "verified": true,
+          "note": "NIM cold starts are slow; the route waits up to 30 minutes"
+        },
+        {
+          "router": "opencode",
+          "id": "cloudflare-workers-ai/@cf/zai-org/glm-5.3-flash",
+          "verified": true
+        },
         {
           "router": "nvidia",
           "id": "z-ai/glm-5.3-flash",
@@ -285,6 +309,7 @@
   "changelog": [
     "2026-11-10: first public version. Route ids are provisional (verified: false).",
     "2026-11-10: model ids checked against NVIDIA build, OpenRouter and Cloudflare model pages (all verified); added the free OpenRouter GLM route; Cloudflare GLM flash marked as deprecating 2026-11-20.",
-    "2026-11-10: nvidia patience (8 attempts, 300s first token, 1200s total) because NIM cold starts often need 5-10 minutes and several reconnects before the first token."
+    "2026-11-10: nvidia patience (8 attempts, 300s first token, 1200s total) because NIM cold starts often need 5-10 minutes and several reconnects before the first token.",
+    "2026-11-10: OpenCode 2 routes first for deepseek-flash and glm-flash (agents that read, edit and test); opencode bin is [opencode2, opencode]; OpenCode 1 is refused by a version check; NVIDIA GLM confirmed on OpenCode; the free OpenRouter GLM id is not listed by OpenCode 2.2.2, so no OpenCode route was added for it."
   ]
 }

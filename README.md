@@ -4,7 +4,7 @@ Let Opus think. Let free models do the legwork.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Node: >= 20](https://img.shields.io/badge/node-%3E%3D%2020-blue.svg)](https://nodejs.org) [![Tests](https://github.com/ferasalm/claude-workforce/actions/workflows/test.yml/badge.svg)](https://github.com/ferasalm/claude-workforce/actions/workflows/test.yml)
 
-claude-workforce is a set of skills (instruction files that Claude Code loads when needed) and agents for Claude Code. Your Pro or Max plan buys a limited amount of Claude usage. This project keeps that usage for decisions and hands the legwork, reading, searching and building, to free or cheap non-Claude models: Gemini Flash through Google's free Antigravity CLI, DeepSeek and GLM through NVIDIA's free API, OpenRouter free models, Cloudflare's free tier. A pinned Claude Haiku is the fallback, never the default.
+claude-workforce is a set of skills (instruction files that Claude Code loads when needed) and agents for Claude Code. Your Pro or Max plan buys a limited amount of Claude usage. This project keeps that usage for decisions and hands the legwork, reading, searching and building, to free or cheap non-Claude models: Gemini Flash through Google's free Antigravity CLI, DeepSeek and GLM through OpenCode 2 or NVIDIA's free API, OpenRouter free models, Cloudflare's free tier. A pinned Claude Haiku is the fallback, never the default.
 
 ## Why
 
@@ -74,9 +74,18 @@ node install.mjs
 
 `install.mjs` writes files under `~/.claude` only and prints one line per file.
 
-### 3. Add at least one free route
+### 3. Install OpenCode 2 and connect a free provider (recommended)
 
-Pick one of these:
+OpenCode 2 runs DeepSeek and GLM as agents: they read the project, edit files and run tests. Without it, an API route answers once from the files packed into the brief and can only write whole files.
+
+```bash
+npm i -g @opencode/cli@latest
+opencode auth login
+```
+
+Pick NVIDIA, Cloudflare Workers AI or OpenRouter in `opencode auth login`, and paste a key for that provider. OpenCode stores the credential itself. If `opencode --version` prints 1.x, the old package is installed: run `npm rm -g opencode-ai`, then install `@opencode/cli` again. `opencode-ai` is OpenCode 1, and its `run` has no `--standalone`, so every OpenCode route fails with it.
+
+Without OpenCode, either of these still works:
 
 **Antigravity CLI** (free; gives you Gemini Flash workers). Windows:
 
@@ -108,7 +117,7 @@ export NVIDIA_API_KEY="<your key>"
 node ~/.claude/skills/lean-orchestrator/tools/worker.mjs doctor
 ```
 
-`doctor` prints one line per router: `READY`, `NO KEY` (with the variable name and signup URL), or `NOT INSTALLED`, and the first route that can run for each kind.
+`doctor` prints one line per router: `READY`, `TOO OLD` (an OpenCode 1 binary, with the fix), `NO KEY` (with the variable name and signup URL), or `NOT INSTALLED`, and the first route that can run for each kind.
 
 ### 5. Start
 
@@ -186,7 +195,7 @@ Uninstall: `node install.mjs --uninstall`. It removes only what it installed and
 Yes. Antigravity CLI is free, NVIDIA gives free API credits, OpenRouter has free models, Cloudflare has a free daily allocation. Install `agy` or set one key, and your workers cost your plan nothing.
 
 **Do I need OpenCode?**
-No. It is optional and only adds file-reading agents on API models. Everything works without it.
+It is recommended. OpenCode 2 lets DeepSeek and GLM run as agents: they read the project, edit files and run tests. Without it, they answer once from the files packed into the brief and can only write whole files. Antigravity and direct API keys still work without it.
 
 **Windows, macOS, Linux?**
 All three. It is developed and tested on Windows, and CI runs all three.
@@ -196,6 +205,9 @@ Yes, for planning and checking. That is the point: judgement stays on your best 
 
 **What if a free route is down?**
 `worker.mjs` falls back to the next route, then the next pick, and names the pinned Claude agent to spawn last. The output says which route answered.
+
+**Why is NVIDIA so slow?**
+NVIDIA NIM often needs 5 to 10 minutes and 4 to 8 reconnects before it sends the first token. The `nvidia` router waits instead of failing: `routers.nvidia.patience` in `routing.json` sets the attempts, the first-token wait, the idle gap, the backoff and the total time. Lower those values to fail faster.
 
 ## License
 

@@ -24,6 +24,11 @@
 // routers, routes with `oc` run through OpenCode, routes with `agy` through agy. v2 routes have
 // {router, id} and routers declare their type.
 //
+// A router's `bin` may be one program name or path, or an array tried in order. OpenCode with no
+// `bin` and no OPENCODE_BIN tries `opencode2` then `opencode`. An OpenCode binary older than 2 is
+// skipped: OpenCode 1 has no `run --standalone` (npm rm -g opencode-ai; npm i -g @opencode/cli@latest).
+// A route may set `timeoutSec` (positive number): for program routes it replaces --timeout for that route.
+//
 // HTTP routers may set `patience`: {attempts, firstTokenSec, idleSec, backoffSec: [..], totalSec}.
 // attempts: tries per route (default 2). firstTokenSec: seconds until the first stream event may
 // arrive (default --timeout). idleSec: longest allowed gap between events after the first (default
@@ -38,7 +43,7 @@
 //
 // Test hooks: WORKER_ROUTING, WORKER_FAKE_HTTP, WORKER_FAKE_CLI, WORKER_FAKE_CLI_SLEEP_MS,
 // WORKER_FAIL_ROUTERS, WORKER_DEBUG_PROMPT, WORKER_RETRY_DELAY_MS, WORKER_SLOT_DIR,
-// WORKER_SLOT_WAIT, WORKER_AGY_SLOTS, WORKER_OPENCODE_SLOTS.
+// WORKER_SLOT_WAIT, WORKER_AGY_SLOTS, WORKER_OPENCODE_SLOTS, WORKER_FAKE_OPENCODE_VERSION.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -234,26 +239,65 @@ function which(name) {
   return null;
 }
 
-function programCandidate(R, name, mode) {
+// A router's bin is one name/path or an array tried in order. With no bin and no env override,
+// OpenCode tries opencode2 then opencode (OpenCode 2 installs both).
+function binCandidates(R, name, mode) {
   const envName = BIN_ENV[programKey(mode)];
-  if (envName && process.env[envName]) return process.env[envName];
+  if (envName && process.env[envName]) return [process.env[envName]];
   const cfg = routerConfig(R, name);
-  if (cfg && cfg.bin) return String(cfg.bin);
-  return programKey(mode);
+  const raw = cfg && cfg.bin;
+  const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
+  if (list.length) return list.map(String);
+  return programKey(mode) === 'opencode' ? ['opencode2', 'opencode'] : [programKey(mode)];
 }
 
-function programPath(R, name, mode) {
-  const envName = BIN_ENV[programKey(mode)];
-  if (envName && process.env[envName]) {
-    const p = process.env[envName];
-    return fileExists(p) ? spawnable(p) : null;
-  }
-  const cfg = routerConfig(R, name);
-  const bin = cfg && cfg.bin ? String(cfg.bin) : programKey(mode);
+function programCandidate(R, name, mode) {
+  return binCandidates(R, name, mode).join(' or ');
+}
+
+function binPath(bin) {
   if (path.isAbsolute(bin) || /^[A-Za-z]:/.test(bin) || bin.includes('/') || bin.includes('\\')) {
     return fileExists(bin) ? spawnable(bin) : null;
   }
   return which(bin);
+}
+
+function programPath(R, name, mode) {
+  for (const bin of binCandidates(R, name, mode)) {
+    const p = binPath(bin);
+    if (p) return p;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------- OpenCode version gate
+const OPENCODE_MIN_MAJOR = 2;
+const versionCache = new Map();
+
+function versionFromText(text) {
+  const m = String(text ?? '').match(/(\d+)\.(\d+)\.(\d+)/);
+  if (!m) return null;
+  return { version: `${m[1]}.${m[2]}.${m[3]}`, major: Number(m[1]) };
+}
+
+function opencodeVersion(bin) {
+  const key = path.resolve(String(bin));
+  if (versionCache.has(key)) return versionCache.get(key);
+  const fake = process.env.WORKER_FAKE_OPENCODE_VERSION;
+  let found;
+  if (fake !== undefined) {
+    found = versionFromText(fake);
+  } else {
+    const r = spawnSync(bin, ['--version'], { encoding: 'utf8', timeout: 20000, windowsHide: true });
+    found = versionFromText(`${(r && r.stdout) || ''}\n${(r && r.stderr) || ''}`);
+  }
+  const info = found ? { ...found, bin } : null;
+  versionCache.set(key, info);
+  return info;
+}
+
+function tooOldReason(v) {
+  return `too old (v${v.version} at ${v.bin}; needs OpenCode 2: npm i -g @opencode/cli@latest)`;
 }
 
 function routeAvailability(R, route, opts = {}) {
@@ -266,9 +310,14 @@ function routeAvailability(R, route, opts = {}) {
   if (info.mode === 'agy' || info.mode === 'oc') {
     if (process.env.WORKER_FAKE_CLI && !opts.doctor) return { ok: true };
     const bin = programPath(R, route.router, info.mode);
-    return bin
-      ? { ok: true, bin }
-      : { ok: false, reason: `not installed (${programCandidate(R, route.router, info.mode)})` };
+    if (!bin) {
+      return { ok: false, reason: `not installed (${programCandidate(R, route.router, info.mode)})` };
+    }
+    if (info.mode === 'oc') {
+      const v = opencodeVersion(bin);
+      if (v && v.major < OPENCODE_MIN_MAJOR) return { ok: false, reason: tooOldReason(v) };
+    }
+    return { ok: true, bin };
   }
   return { ok: false, reason: 'unknown router type' };
 }
@@ -279,6 +328,16 @@ function effortFor(pick, model, mode, override) {
 
 function routeIdFor(info, eff) {
   return info.mode === 'oc' && eff ? `${info.id}#${eff}` : info.id;
+}
+
+// A program route may override the global --timeout for its own child process.
+function routeTimeout(route) {
+  const raw = route && route.timeoutSec;
+  if (raw === undefined) return timeoutSec;
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) {
+    die(`route ${route.router}: timeoutSec must be a positive number of seconds`);
+  }
+  return raw;
 }
 
 function pickStr(R, p) {
@@ -738,7 +797,7 @@ async function httpAttempt(R, route, ctx) {
 }
 
 // ---------------------------------------------------------------- child processes
-function runChild(bin, childArgs, cwd) {
+function runChild(bin, childArgs, cwd, seconds = timeoutSec) {
   return new Promise((resolve) => {
     const isWin = process.platform === 'win32';
     let child;
@@ -783,7 +842,7 @@ function runChild(bin, childArgs, cwd) {
       }
       try { child.kill('SIGKILL'); } catch { /* Already gone. */ }
       finish(124, true);
-    }, timeoutSec * 1000);
+    }, seconds * 1000);
   });
 }
 
@@ -863,15 +922,16 @@ async function acquireSlot(name, seconds) {
 async function cliAttempt(R, route, ctx) {
   const info = ctx.info;
   const name = info.mode === 'agy' ? 'agy' : 'opencode';
-  const release = await acquireSlot(name, timeoutSec);
+  const secs = routeTimeout(route);
+  const release = await acquireSlot(name, secs);
   try {
     const fake = process.env.WORKER_FAKE_CLI;
     if (fake) {
       const sleepMs = numberEnv('WORKER_FAKE_CLI_SLEEP_MS', 0);
-      const timeoutMs = timeoutSec * 1000;
+      const timeoutMs = secs * 1000;
       if (sleepMs >= timeoutMs) {
         await sleep(timeoutMs);
-        return { ok: false, reason: `timed out after ${timeoutSec}s` };
+        return { ok: false, reason: `timed out after ${secs}s` };
       }
       if (sleepMs > 0) await sleep(sleepMs);
       try {
@@ -885,8 +945,8 @@ async function cliAttempt(R, route, ctx) {
     const childArgs = info.mode === 'agy'
       ? ['-p', ctx.brief, '--model', info.id, '--effort', ctx.eff || 'low', '--mode', ctx.write ? 'accept-edits' : 'plan']
       : ['run', '--standalone', '-m', ctx.displayId, ...(ctx.write ? [] : ['--agent', 'plan']), ctx.brief]; // --standalone: a private server, so killing this process also stops the agent
-    const res = await runChild(bin, childArgs, ctx.dir);
-    if (res.timedOut) return { ok: false, reason: `timed out after ${timeoutSec}s` };
+    const res = await runChild(bin, childArgs, ctx.dir, secs);
+    if (res.timedOut) return { ok: false, reason: `timed out after ${secs}s` };
     if (res.code !== 0) {
       const tailText = oneLine(strip(res.out || '')).slice(-200);
       return { ok: false, reason: `exit ${res.code}${tailText ? ': ' + tailText : ''}` };
@@ -1133,8 +1193,21 @@ function commandDoctor() {
       else console.log(`router ${name}: READY`);
     } else if (type === 'agy' || type === 'opencode') {
       const mode = type === 'agy' ? 'agy' : 'oc';
-      if (programPath(R, name, mode)) console.log(`router ${name}: READY`);
-      else console.log(`router ${name}: NOT INSTALLED (${programCandidate(R, name, mode)})`);
+      const bin = programPath(R, name, mode);
+      if (!bin) {
+        console.log(`router ${name}: NOT INSTALLED (${programCandidate(R, name, mode)})`);
+      } else if (mode === 'oc') {
+        const v = opencodeVersion(bin);
+        if (v && v.major < OPENCODE_MIN_MAJOR) {
+          console.log(`router ${name}: TOO OLD (v${v.version} at ${bin}; needs OpenCode 2: npm i -g @opencode/cli@latest)`);
+        } else if (v) {
+          console.log(`router ${name}: READY (v${v.version} at ${bin})`);
+        } else {
+          console.log(`router ${name}: READY`);
+        }
+      } else {
+        console.log(`router ${name}: READY`);
+      }
     } else {
       console.log(`router ${name}: READY`);
     }

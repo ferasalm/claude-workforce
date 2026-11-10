@@ -8,7 +8,7 @@ Check what works on your machine:
 node ~/.claude/skills/lean-orchestrator/tools/worker.mjs doctor
 ```
 
-It prints one line per router: `READY`, `NO KEY (<ENV>) -> <signup URL>`, or `NOT INSTALLED (<bin>)`, then the first route that can run for each kind.
+It prints one line per router: `READY`, `TOO OLD` (an OpenCode 1 binary), `NO KEY (<ENV>) -> <signup URL>`, or `NOT INSTALLED (<bin>)`, then the first route that can run for each kind.
 
 | Router | Type | Key variable | Base URL or program |
 |---|---|---|---|
@@ -16,7 +16,7 @@ It prints one line per router: `READY`, `NO KEY (<ENV>) -> <signup URL>`, or `NO
 | `openrouter` | http | `OPENROUTER_API_KEY` | `https://openrouter.ai/api/v1` |
 | `cloudflare` | http | `CLOUDFLARE_API_TOKEN` (+ `CLOUDFLARE_ACCOUNT_ID`) | `https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/v1` |
 | `agy` | program | none | the `agy` CLI |
-| `opencode` | program | none | the `opencode` CLI |
+| `opencode` | program | none | OpenCode 2 (`opencode2`, then `opencode`) |
 | `claude` | agents | none | your pinned Claude agents |
 
 ## NVIDIA NIM
@@ -27,6 +27,13 @@ It prints one line per router: `READY`, `NO KEY (<ENV>) -> <signup URL>`, or `NO
 - **Base URL:** `https://integrate.api.nvidia.com/v1` (OpenAI-compatible: answers `POST <baseUrl>/chat/completions`).
 - **Model ids used in routing.json:** `z-ai/glm-5.3-flash`, `deepseek-ai/deepseek-v4.1-flash`, `nvidia/nemotron-3-ultra-550b-a55b`.
 - **Set the key:** Windows `setx NVIDIA_API_KEY "<your key>"`, then open a new terminal. macOS/Linux: add `export NVIDIA_API_KEY="<your key>"` to `~/.zshrc` or `~/.bashrc`, then open a new terminal.
+- **Cold starts:** NVIDIA NIM often needs 5 to 10 minutes and 4 to 8 reconnects before it sends the first token. That is normal, not a broken key.
+- **`patience`:** the `nvidia` router waits instead of failing at once. In `routing.json` it sets `{ "attempts": 8, "firstTokenSec": 300, "idleSec": 120, "backoffSec": [10, 20, 30], "totalSec": 1200 }`. Every field is in seconds except `attempts`:
+  - `attempts`: tries per route (default 2).
+  - `firstTokenSec`: how long the first stream event may take (default `--timeout`).
+  - `idleSec`: longest allowed gap between events after the first (default 120).
+  - `backoffSec`: waits between attempts; the last value repeats (default `WORKER_RETRY_DELAY_MS`).
+  - `totalSec`: cap for the whole route, all attempts and waits included (default `--timeout`).
 
 ## OpenRouter
 
@@ -53,12 +60,15 @@ It prints one line per router: `READY`, `NO KEY (<ENV>) -> <signup URL>`, or `NO
 - **Base URL:** `https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/v1`.
 - **Model ids used in routing.json:** `@cf/deepseek-ai/deepseek-v4.1-flash-1017`, `@cf/zai-org/glm-5.3-flash`. The GLM flash id is marked deprecating on 2026-11-20, so NVIDIA is tried first for GLM.
 
-## OpenCode (optional)
+## OpenCode 2 (recommended)
 
-- **What it is:** an open-source coding CLI (https://github.com/anomalyco/opencode) that runs agents on whatever providers you configure there. Optional in claude-workforce: it adds file-reading agents on API models. Cost: routing.json marks it "uses your OpenCode providers", so it costs what those providers charge.
-- **Install:** macOS/Linux `curl -fsSL https://opencode.ai/install | bash`. Windows: `npm i -g @opencode/cli@latest` or `scoop install opencode`.
-- **Env var:** none. Providers are configured in `opencode.json` or with `/connect`.
-- **Model ids:** whatever your OpenCode providers expose; `routing.json` has no fixed ids for it.
+- **What it is:** an open-source coding CLI (https://github.com/anomalyco/opencode) that runs agents on the providers you connect there. With OpenCode, DeepSeek and GLM read the project, edit files and run tests. Without it, an `http` route answers once from the files packed into the brief and writes only whole files.
+- **Install:** `npm i -g @opencode/cli@latest`. This is OpenCode 2 (latest 2.2.7). It installs both `opencode` and `opencode2`; routing tries `opencode2` first, then `opencode`. Windows, macOS and Linux use the same npm package.
+- **OpenCode 1 warning:** the package `opencode-ai` is OpenCode 1 (1.19.x). Its `run` has no `--standalone`, so every OpenCode route fails with it. Remove it with `npm rm -g opencode-ai`. `worker.mjs` checks `<bin> --version` and skips an OpenCode 1 binary with `too old (...; needs OpenCode 2: npm i -g @opencode/cli@latest)`; `doctor` prints `TOO OLD`.
+- **Connect providers:** `opencode auth login` and pick NVIDIA, Cloudflare Workers AI or OpenRouter. `opencode auth list` shows what is connected. OpenCode stores the credential itself; this project never sees it.
+- **Env var:** none. Set `OPENCODE_BIN` only to point at a specific binary, or `AGY_BIN` for agy.
+- **OpenCode routes in routing.json:** DeepSeek: `cloudflare-workers-ai/@cf/deepseek-ai/deepseek-v4.1-flash-1017`, then `nvidia/deepseek-ai/deepseek-v4.1-flash`. GLM: `nvidia/z-ai/glm-5.3-flash`, then `cloudflare-workers-ai/@cf/zai-org/glm-5.3-flash`. After those, each model falls back to its direct API routes. Ids are namespaced by provider; `opencode models` lists yours. OpenCode 2.2.2 lists no free `openrouter/z-ai/glm-5.3-flash:free`, so no OpenCode route uses it.
+- **Slow models:** a route may set `timeoutSec` (a positive number of seconds). For program routes it replaces `--timeout` for that route only. The OpenCode routes to NVIDIA DeepSeek and GLM use `timeoutSec: 1800` because NIM cold starts are slow.
 
 ## Add any other OpenAI-compatible provider
 
