@@ -464,10 +464,13 @@ test('R5: a write run skips a cli router that has no writeArgs', () => {
 
 /* R6 ------------------------------------------------------------------ */
 
+const REPORT_PLACEHOLDERS = path.join(TEMP_ROOT, 'r6-placeholders-report.json');
+const REPORT_CLEANUP = path.join(TEMP_ROOT, 'r6-cleanup-report.json');
+
 test('R6: placeholders are replaced in every element of the chosen array', () => {
   const s = setup('r6-placeholders', routingWith('codex', cliRouter({
     args: [
-      '--fake-out-text', 'ANSWER-FROM-OUT',
+      '--fake-out-text', 'ANSWER-FROM-OUT', '--fake-report-file', REPORT_PLACEHOLDERS,
       '--prompt', '{brief}',
       '--brief-file', '{briefFile}',
       '--id', '{id}',
@@ -483,7 +486,7 @@ test('R6: placeholders are replaced in every element of the chosen array', () =>
   assert.equal(res.status, 0, output(res));
   assert.match(String(res.stdout), /ANSWER-FROM-OUT/);
 
-  const report = fakeReport(res);
+  const report = JSON.parse(fs.readFileSync(REPORT_PLACEHOLDERS, 'utf8'));
   assert.equal(valueAfter(report.args, '--id'), 'codex-model-id');
   assert.equal(valueAfter(report.args, '--effort-value'), 'high');
   assert.equal(valueAfter(report.args, '--braces'), '{notAPlaceholder}');
@@ -527,11 +530,11 @@ test('R6: the effort falls back to medium', () => {
 
 test('R6: temporary files are removed after a failed attempt', () => {
   const s = setup('r6-cleanup', routingWith('codex', cliRouter({
-    args: ['--brief-file', '{briefFile}', '-o', '{out}', '--fake-exit', '3'],
+    args: ['--brief-file', '{briefFile}', '-o', '{out}', '--fake-exit', '3', '--fake-report-file', REPORT_CLEANUP],
   })));
   const res = runIn(s);
   assert.notEqual(res.status, 0, output(res));
-  const report = fakeReport(res);
+  const report = JSON.parse(fs.readFileSync(REPORT_CLEANUP, 'utf8'));
   const briefFile = valueAfter(report.args, '--brief-file');
   const outFile = valueAfter(report.args, '-o');
   assert.equal(fs.existsSync(briefFile), false, `brief file left behind: ${briefFile}`);
@@ -1237,3 +1240,15 @@ test('R10 runs through different cli routers do not share a slot', async () => {
 
 // R13: nothing else changes.
 }
+
+test('R8: the answer is printed once, after strip, and the stripped line is not printed', () => {
+  const s = setup('r8-once', routingWith('codex', cliRouter({
+    args: ['--brief-file', '{briefFile}', '--fake-session', 'SESS-ONCE', '--fake-stdout', 'ANSWER-ONCE'],
+    strip: ['^session_id: .*$'],
+  })));
+  const res = runIn(s);
+  assert.equal(res.status, 0, output(res));
+  const out = String(res.stdout);
+  assert.equal(out.split('ANSWER-ONCE').length - 1, 1, out);
+  assert.ok(!out.includes('session_id:'), out);
+});

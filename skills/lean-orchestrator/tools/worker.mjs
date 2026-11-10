@@ -1085,7 +1085,6 @@ async function cliRouterAttempt(R, route, ctx) {
     fs.writeFileSync(briefFile, promptText, 'utf8');
     fs.writeFileSync(outFile, '', 'utf8');
     const usedOut = argList.some((arg) => arg.includes('{out}'));
-    const usedBriefFile = argList.some((arg) => arg.includes('{briefFile}'));
     const values = {
       id: ctx.info.id,
       effort: ctx.eff || 'medium',
@@ -1098,8 +1097,6 @@ async function cliRouterAttempt(R, route, ctx) {
     const res = await runChild(target.bin, [...target.args, ...childArgs], ctx.dir, secs, {
       stdinText: cfg.stdin ? promptText : null,
     });
-    // A program handed a brief file prints its own report; keep it visible for the caller.
-    if (usedBriefFile && res.out) console.log(String(res.out).replace(/\s+$/, ''));
     if (res.timedOut) return { ok: false, reason: `timed out after ${secs}s` };
     if (res.code !== 0) {
       const tailText = oneLine(strip(res.out || '')).slice(-200);

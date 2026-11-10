@@ -10,6 +10,7 @@ const CONTROL_KEYS = new Map([
   ['--fake-session', 'session'],
   ['--fake-write', 'write'],
   ['--fake-stderr', 'stderr'],
+  ['--fake-report-file', 'reportFile'],
 ]);
 
 function parseArguments(argv) {
@@ -110,7 +111,12 @@ async function main() {
       cwd: process.cwd(),
       files: collectFiles(args),
     };
-    process.stdout.write(`FAKE-REPORT ${JSON.stringify(report)}\n`);
+    if (controls.reportFile !== undefined) {
+      fs.mkdirSync(path.dirname(path.resolve(controls.reportFile)), { recursive: true });
+      fs.writeFileSync(path.resolve(controls.reportFile), JSON.stringify(report), 'utf8');
+    } else {
+      process.stdout.write(`FAKE-REPORT ${JSON.stringify(report)}\n`);
+    }
   }
 
   if (controls.exit !== undefined) {

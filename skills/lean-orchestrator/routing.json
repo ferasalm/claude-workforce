@@ -1,7 +1,7 @@
 {
   "version": 2,
   "updated": "2026-11-10",
-  "how_to_edit": "This is the ONLY place that names non-Claude models. Skills, agents and docs refer to kinds (trivial, scout-light, ...) and never to a model. A route is one way to reach a model: {router, id}. Routes inside a model are tried in order, free ones first. Edit a pick list when your data or decision changes; run `node tools/worker.mjs route` to check the result and `node tools/worker.mjs doctor` to see which routes can run on this machine. Routes marked \"verified\": false carry provisional model ids: check them against the provider's model list. Each change gets one line in `changelog` below. A router of type `cli` describes a command-line harness by data (bin, args, writeArgs, placeholders); docs/providers.md explains the fields. `node tools/bench.mjs` measures the routes on your machine, so the order of picks can rest on data.",
+  "how_to_edit": "This is the ONLY place that names non-Claude models. Skills, agents and docs refer to kinds (trivial, scout-light, ...) and never to a model. A route is one way to reach a model: {router, id}. Routes inside a model are tried in order, free ones first. Edit a pick list when your data or decision changes; run `node tools/worker.mjs route` to check the result and `node tools/worker.mjs doctor` to see which routes can run on this machine. Routes marked \"verified\": false carry provisional model ids: check them against the provider's model list. Each change gets one line in `changelog` below. A router of type `cli` describes a command-line harness by data (bin, args, writeArgs, placeholders); docs/providers.md explains the fields.",
   "routers": {
     "nvidia": {
       "type": "http",

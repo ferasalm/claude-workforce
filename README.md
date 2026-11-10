@@ -225,8 +225,6 @@ Uninstall: `node install.mjs --uninstall`. It removes only what it installed and
 
 **What happens when a free offer ends?** The route fails and the ladder moves on to the next pick. LongCat 2.5 on Nous Portal is the current example: Nous announced it as free for one week from 2026-11-06. When its id stops answering, replace it with the current free Nous model in `routing.json`.
 
-**Which route is fastest on my machine?** Run `node ~/.claude/skills/lean-orchestrator/tools/bench.mjs`, which runs three fixed small tasks against every model route and prints the pass rate and median seconds, so the order of picks can rest on your own measurements.
-
 ## License
 
 [MIT](LICENSE).
