@@ -137,7 +137,7 @@ describe('worker.mjs route walking', () => {
     assert.match(r.stderr, /\[worker\] skip openrouter: .*OPENROUTER_API_KEY/);
     assert.match(r.stderr, /\[worker\] skip agy: .*not installed/i);
     assert.ok(!/\[worker\] route .* failed:/.test(r.stderr));
-    r = run(['run', 'builder-iq', b, '--write', '--dir', newDir('x-copy-')], { env: { CLOUDFLARE_API_TOKEN: 'cf-token', AGY_BIN: missing('agy'), OPENCODE_BIN: missing('opencode') } });
+    r = run(['run', 'builder-iq', b, '--write', '--dir', gitRepo()], { env: { CLOUDFLARE_API_TOKEN: 'cf-token', AGY_BIN: missing('agy'), OPENCODE_BIN: missing('opencode') } });
     assert.equal(r.status, 3, r.all);
     assert.match(r.stderr, /\[worker\] skip cloudflare: .*CLOUDFLARE_ACCOUNT_ID/);
   });
@@ -272,17 +272,22 @@ describe('worker.mjs files and http writes', () => {
       assert.equal(gitStatus(repo).trim(), '', `repo changed for ${bad}`);
     }
   });
-  it('refuses a non-git write dir but allows one named x-copy', () => {
+  it('refuses a non-git write dir, even one named x-copy, and writes in a git repo', () => {
     const plain = newDir('plain-'), b = newBrief('Write one file.');
     const answer = '=== FILE: made.txt ===\nMADE\n=== END FILE ===\n', f = newFake(answer), dbg = path.join(plain, 'debug.json');
     let r = run(['run', 'builder-iq', b, '--write', '--dir', plain], { env: { NVIDIA_API_KEY: 'nv-key', WORKER_FAKE_HTTP: f, WORKER_DEBUG_PROMPT: dbg } });
     assert.equal(r.status, 2, r.all);
     assert.match(r.all, /git/i);
     assert.ok(!fs.existsSync(dbg), 'sent a request before the git check');
-    const copy = newDir('x-copy-');
-    r = run(['run', 'builder-iq', b, '--write', '--dir', copy], { env: { NVIDIA_API_KEY: 'nv-key', WORKER_FAKE_HTTP: f } });
+    const copy = newDir('x-copy-'), copyDbg = path.join(copy, 'debug.json');
+    r = run(['run', 'builder-iq', b, '--write', '--dir', copy], { env: { NVIDIA_API_KEY: 'nv-key', WORKER_FAKE_HTTP: f, WORKER_DEBUG_PROMPT: copyDbg } });
+    assert.equal(r.status, 2, r.all);
+    assert.match(r.all, /git/i);
+    assert.ok(!fs.existsSync(copyDbg), 'sent a request before the git check');
+    const repo = gitRepo();
+    r = run(['run', 'builder-iq', b, '--write', '--dir', repo], { env: { NVIDIA_API_KEY: 'nv-key', WORKER_FAKE_HTTP: f } });
     assert.equal(r.status, 0, r.all);
-    assert.equal(read(path.join(copy, 'made.txt')).trim(), 'MADE');
+    assert.equal(read(path.join(repo, 'made.txt')).trim(), 'MADE');
     assert.match(r.stdout, /\[worker\] wrote made\.txt/);
   });
   it('fails a write route when the fake CLI changes no files', () => {

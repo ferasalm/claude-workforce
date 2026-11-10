@@ -478,7 +478,7 @@ async function httpAttempt(R, route, ctx) {
       }
       if (fakeRes.status < 200 || fakeRes.status >= 300) {
         const transient = fakeRes.status === 429 || (fakeRes.status >= 500 && fakeRes.status < 600);
-        return { ok: false, transient, reason: `HTTP ${fakeRes.status}: ${fakeRes.body.slice(0, 400)}` };
+        return { ok: false, transient, reason: `HTTP ${fakeRes.status}: ${redactText(fakeRes.body, key).slice(0, 400)}` };
       }
       return { ok: true, out: fakeRes.body };
     }
@@ -492,13 +492,13 @@ async function httpAttempt(R, route, ctx) {
       const raw = await res.text();
       if (!res.ok) {
         const transient = res.status === 429 || (res.status >= 500 && res.status < 600);
-        return { ok: false, transient, reason: `HTTP ${res.status}: ${raw.slice(0, 400)}` };
+        return { ok: false, transient, reason: `HTTP ${res.status}: ${redactText(raw, key).slice(0, 400)}` };
       }
       let json;
       try {
         json = JSON.parse(raw);
       } catch {
-        return { ok: false, reason: `invalid JSON from provider: ${raw.slice(0, 200)}` };
+        return { ok: false, reason: `invalid JSON from provider: ${redactText(raw, key).slice(0, 200)}` };
       }
       return { ok: true, out: extractContent(json) };
     } catch (e) {
@@ -541,15 +541,22 @@ function runChild(bin, childArgs, cwd) {
     let out = '';
     let settled = false;
     let timer;
+    let drain;
     const finish = (code, timedOut) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(drain);
+      // Drop the pipes so an inherited handle in a grandchild cannot keep this process alive.
+      child.stdout.destroy();
+      child.stderr.destroy();
       resolve({ code: timedOut ? 124 : code, out, timedOut: !!timedOut });
     };
     child.stdout.on('data', (d) => { out += d; });
     child.stderr.on('data', (d) => { out += d; });
     child.on('error', (e) => { out += String(e); finish(126, false); });
+    // A grandchild may hold the pipes open, so do not wait for 'close' forever: give it 2 s to drain.
+    child.on('exit', (code) => { drain = setTimeout(() => finish(code, false), 2000); });
     child.on('close', (code) => finish(code, false));
     timer = setTimeout(() => {
       try {
@@ -686,14 +693,31 @@ function isGitWorkTree(d) {
   }
 }
 
-function gitStatus(d) {
-  try {
-    return execFileSync('git', ['status', '--porcelain'], {
-      cwd: d, env: { ...process.env, PWD: d }, encoding: 'utf8', timeout: 10000, windowsHide: true,
-    });
-  } catch {
-    return '';
+function gitSnapshot(d) {
+  const hash = crypto.createHash('sha256');
+  const git = (args) => {
+    try {
+      return execFileSync('git', args, {
+        cwd: d, env: { ...process.env, PWD: d }, timeout: 10000, windowsHide: true, maxBuffer: 64 * 1024 * 1024,
+      });
+    } catch {
+      return null;
+    }
+  };
+  // status --porcelain misses new edits to files that were already dirty, so hash the diff itself.
+  const diff = git(['diff', '--binary', 'HEAD']) || git(['diff', '--binary']);
+  if (diff) hash.update(diff);
+  const others = git(['ls-files', '--others', '--exclude-standard', '-z']);
+  for (const rel of String(others || '').split('\0').filter(Boolean)) {
+    let contentHash = '<unreadable>';
+    try {
+      contentHash = crypto.createHash('sha256').update(fs.readFileSync(path.join(d, rel))).digest('hex');
+    } catch {
+      // Vanished or unreadable: still counts as a distinct state.
+    }
+    hash.update('\0' + rel + '\0' + contentHash);
   }
+  return hash.digest('hex');
 }
 
 function dirSignature(d) {
@@ -726,7 +750,7 @@ function dirSignature(d) {
 }
 
 function changeDetector(d, useGit) {
-  return useGit ? () => gitStatus(d) : () => dirSignature(d);
+  return useGit ? () => gitSnapshot(d) : () => dirSignature(d);
 }
 
 function parseFileBlocks(answer) {
@@ -749,14 +773,51 @@ function parseFileBlocks(answer) {
   return blocks;
 }
 
+const WIN_DEVICE = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i;
+
+// The nearest existing ancestor must really live under the real base, so a symlink or junction cannot point out.
+function insideRealBase(base, abs) {
+  let realBase;
+  try {
+    realBase = fs.realpathSync(base);
+  } catch {
+    return false;
+  }
+  let cur = base;
+  let nearest = base;
+  for (const part of path.relative(base, abs).split(path.sep).filter(Boolean)) {
+    cur = path.join(cur, part);
+    try {
+      fs.lstatSync(cur);
+      nearest = cur;
+    } catch {
+      break; // Nothing below a missing component can exist yet.
+    }
+  }
+  let real;
+  try {
+    real = fs.realpathSync(nearest);
+  } catch {
+    return false;
+  }
+  const relative = path.relative(realBase, real);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
 function safeRelPath(base, rel) {
   const cleaned = String(rel || '').replace(/\\/g, '/').trim();
   if (!cleaned) return null;
   if (cleaned.startsWith('/') || /^[A-Za-z]:/.test(cleaned) || path.isAbsolute(cleaned)) return null;
-  if (cleaned.split('/').includes('..')) return null;
+  const parts = cleaned.split('/').filter((p) => p && p !== '.'); // './src/a.txt' is fine
+  if (!parts.length) return null;
+  for (const part of parts) {
+    if (part === '..' || part.toLowerCase() === '.git') return null;
+    if (part.includes(':') || /[. ]$/.test(part) || WIN_DEVICE.test(part)) return null;
+  }
   const abs = path.resolve(base, cleaned);
   const relative = path.relative(base, abs);
   if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null;
+  if (!insideRealBase(base, abs)) return null;
   return { abs, rel: relative };
 }
 
@@ -985,13 +1046,10 @@ async function commandRun(R) {
 
   let useGit = false;
   if (isWrite) {
-    const base = path.basename(dir).toLowerCase();
-    const allowed = base.includes('copy') || base.includes('tmp');
-    const git = isGitWorkTree(dir);
-    if (!allowed && !git) {
-      die(`--dir is not inside a git work tree: ${dir} (use a git repo, or a folder whose name contains "copy" or "tmp")`);
+    if (!isGitWorkTree(dir)) {
+      die(`--dir is not inside a git work tree: ${dir}`);
     }
-    useGit = git;
+    useGit = true;
   }
   const ctx = {
     brief,
@@ -1030,7 +1088,7 @@ async function commandRun(R) {
       }
       ran++;
       const outFile = `${briefFile}.${p.model}.out.txt`;
-      fs.writeFileSync(outFile, r.out + '\n');
+      fs.writeFileSync(outFile, redactText(r.out, r.key) + '\n');
       console.log(`--- ${p.model} ---`);
       show(redactText(r.out, r.key));
     }
@@ -1058,7 +1116,7 @@ async function commandRun(R) {
       continue;
     }
     const outFile = `${briefFile}.${kindName}.out.txt`;
-    fs.writeFileSync(outFile, r.out + '\n');
+    fs.writeFileSync(outFile, redactText(r.out, r.key) + '\n');
     show(redactText(r.out, r.key));
     console.log(`\n[worker] kind=${kindName} picked=${p.model} via=${r.router} id=${r.id} tried=${totalTried} exit=0 secs=${secs()} out=${outFile}`);
     return 0;
@@ -1103,7 +1161,7 @@ async function commandAsk(R) {
     return 1;
   }
   const outFile = `${briefFile}.${alias}.out.txt`;
-  fs.writeFileSync(outFile, r.out + '\n');
+  fs.writeFileSync(outFile, redactText(r.out, r.key) + '\n');
   show(redactText(r.out, r.key));
   console.log(`\n[worker] kind=ask picked=${alias} via=${r.router} id=${r.id} tried=${r.tried} exit=0 secs=${Math.round((Date.now() - started) / 1000)} out=${outFile}`);
   return 0;
@@ -1114,6 +1172,7 @@ async function commandProbe(R, mode) {
   const briefFile = args[1];
   if (!model || !briefFile) die(`usage: worker.mjs ${mode} <model> <brief-file>${mode === 'agy' ? ' [--effort e]' : ''}`);
   if (dirArg && !fs.existsSync(dir)) die('directory not found: ' + dir);
+  if (writeFlag && !isGitWorkTree(dir)) die(`--dir is not inside a git work tree: ${dir}`);
   const brief = readBrief(briefFile);
   const started = Date.now();
   const eff = mode === 'agy' ? (effortArg || 'low') : effortArg;
@@ -1132,9 +1191,10 @@ async function commandProbe(R, mode) {
   };
   const res = await cliAttempt(R, { router: name }, ctx);
   const clean = strip(res.out || '').trim();
+  const key = routeKey(R, { router: name });
   const outFile = briefFile + '.out.txt';
-  fs.writeFileSync(outFile, clean + '\n');
-  show(clean);
+  fs.writeFileSync(outFile, redactText(clean, key) + '\n');
+  show(redactText(clean, key));
   const code = res.ok ? 0 : 1;
   console.log(`\n[worker] mode=${mode} model=${model}${mode === 'agy' ? ` effort=${eff}` : ''} ${writeFlag ? 'WRITE' : 'read-only'} exit=${code} secs=${Math.round((Date.now() - started) / 1000)} out=${outFile}`);
   return code;
