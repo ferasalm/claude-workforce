@@ -137,7 +137,7 @@ describe('worker.mjs route walking', () => {
     assert.match(r.stderr, /\[worker\] skip openrouter: .*OPENROUTER_API_KEY/);
     assert.match(r.stderr, /\[worker\] skip agy: .*not installed/i);
     assert.ok(!/\[worker\] route .* failed:/.test(r.stderr));
-    r = run(['run', 'builder-iq', b], { env: { CLOUDFLARE_API_TOKEN: 'cf-token', AGY_BIN: missing('agy'), OPENCODE_BIN: missing('opencode') } });
+    r = run(['run', 'builder-iq', b, '--write', '--dir', newDir('x-copy-')], { env: { CLOUDFLARE_API_TOKEN: 'cf-token', AGY_BIN: missing('agy'), OPENCODE_BIN: missing('opencode') } });
     assert.equal(r.status, 3, r.all);
     assert.match(r.stderr, /\[worker\] skip cloudflare: .*CLOUDFLARE_ACCOUNT_ID/);
   });
@@ -428,7 +428,7 @@ describe('worker.mjs lock, verify, tail and usage', () => {
     assert.equal(r.stdout.split('\n')[0], '[worker] showing last 50 of 200 chars');
     assert.ok(r.stdout.includes(answer.slice(-50)));
     assert.equal(read(`${b}.trivial.out.txt`).trim(), answer);
-    assert.match(lastLine(r.stdout), /^\[worker\] kind=trivial picked=nemotron-free via=nvidia tried=0 exit=0/);
+    assert.match(lastLine(r.stdout), /^\[worker\] kind=trivial picked=nemotron-free via=nvidia id=nvidia\/nemotron-3-ultra-550b-a55b tried=0 exit=0/);
   });
   it('exits 2 with a [worker] message on usage errors', () => {
     const d = newDir('usage-'), b = newBrief();
