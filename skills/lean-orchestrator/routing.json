@@ -8,7 +8,14 @@
       "baseUrl": "https://integrate.api.nvidia.com/v1",
       "keyEnv": "NVIDIA_API_KEY",
       "signup": "https://build.nvidia.com",
-      "free": true
+      "free": true,
+      "patience": {
+        "attempts": 8,
+        "firstTokenSec": 300,
+        "idleSec": 120,
+        "backoffSec": [10, 20, 30],
+        "totalSec": 1200
+      }
     },
     "openrouter": {
       "type": "http",
@@ -277,6 +284,7 @@
   ],
   "changelog": [
     "2026-11-10: first public version. Route ids are provisional (verified: false).",
-    "2026-11-10: model ids checked against NVIDIA build, OpenRouter and Cloudflare model pages (all verified); added the free OpenRouter GLM route; Cloudflare GLM flash marked as deprecating 2026-11-20."
+    "2026-11-10: model ids checked against NVIDIA build, OpenRouter and Cloudflare model pages (all verified); added the free OpenRouter GLM route; Cloudflare GLM flash marked as deprecating 2026-11-20.",
+    "2026-11-10: nvidia patience (8 attempts, 300s first token, 1200s total) because NIM cold starts often need 5-10 minutes and several reconnects before the first token."
   ]
 }

@@ -24,6 +24,14 @@
 // routers, routes with `oc` run through OpenCode, routes with `agy` through agy. v2 routes have
 // {router, id} and routers declare their type.
 //
+// HTTP routers may set `patience`: {attempts, firstTokenSec, idleSec, backoffSec: [..], totalSec}.
+// attempts: tries per route (default 2). firstTokenSec: seconds until the first stream event may
+// arrive (default --timeout). idleSec: longest allowed gap between events after the first (default
+// 120). backoffSec: waits between attempts; the last value repeats (default
+// [WORKER_RETRY_DELAY_MS/1000]). totalSec: cap for the whole route, all attempts and waits included
+// (default --timeout). Fractional seconds are allowed. HTTP requests ask for a stream and read SSE
+// deltas, falling back to a plain JSON body from providers that ignore `stream`.
+//
 // Common: --timeout SEC (default 600, decimals allowed), --tail CHARS printed to stdout (default 3000).
 // The full answer is saved next to the brief as <brief>.<kind|alias>.out.txt. Exit codes: 0 ok,
 // 1 every pick failed, 2 usage error, 3 a Claude pick must be spawned by the caller, 75 no free slot.
@@ -443,6 +451,216 @@ function readFakeHttp(file) {
   return { status: Number(m[1]), body: lines.slice(1).join('\n') };
 }
 
+const secText = (n) => String(Math.round(n * 1000) / 1000);
+
+function patienceConfig(R, name) {
+  const cfg = routerConfig(R, name) || {};
+  const raw = cfg.patience;
+  const dflt = {
+    attempts: 2,
+    firstTokenSec: timeoutSec,
+    idleSec: 120,
+    backoffSec: [Math.max(0, RETRY_DELAY_MS) / 1000],
+    totalSec: timeoutSec,
+  };
+  if (raw === undefined || raw === null) return dflt;
+  if (typeof raw !== 'object' || Array.isArray(raw)) die(`router ${name}: patience must be an object`);
+  const out = { ...dflt };
+  if (raw.attempts !== undefined) {
+    if (!Number.isInteger(raw.attempts) || raw.attempts < 1) {
+      die(`router ${name}: patience.attempts must be an integer >= 1`);
+    }
+    out.attempts = raw.attempts;
+  }
+  for (const field of ['firstTokenSec', 'idleSec', 'totalSec']) {
+    if (raw[field] === undefined) continue;
+    if (typeof raw[field] !== 'number' || !Number.isFinite(raw[field]) || raw[field] <= 0) {
+      die(`router ${name}: patience.${field} must be a positive number of seconds`);
+    }
+    out[field] = raw[field];
+  }
+  if (raw.backoffSec !== undefined) {
+    const list = raw.backoffSec;
+    if (!Array.isArray(list) || !list.length) {
+      die(`router ${name}: patience.backoffSec must be a non-empty array of positive seconds`);
+    }
+    for (const v of list) {
+      if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) {
+        die(`router ${name}: patience.backoffSec must be a non-empty array of positive seconds`);
+      }
+    }
+    out.backoffSec = list.slice();
+  }
+  return out;
+}
+
+function httpTransientStatus(status) {
+  return status === 408 || status === 425 || status === 429 || (status >= 500 && status < 600);
+}
+
+function retryAfterSeconds(res) {
+  let raw;
+  try {
+    raw = res.headers.get('retry-after');
+  } catch {
+    return null;
+  }
+  if (raw === null || raw === undefined) return null;
+  const n = Number(String(raw).trim());
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.min(n, 120);
+}
+
+function streamDelta(json) {
+  const delta = json && json.choices && json.choices[0] && json.choices[0].delta;
+  if (!delta) return '';
+  const content = delta.content;
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map((p) => (typeof p === 'string' ? p : (p && p.text) || '')).join('');
+  }
+  return '';
+}
+
+// Read an SSE body incrementally. Every chunk (and so every event) calls touch() to reset the idle
+// timer; only choices[0].delta.content contributes to the answer. Stops at `data: [DONE]`.
+async function readSse(stream, touch) {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let data = [];
+  let out = '';
+  let finished = false;
+  const dispatch = () => {
+    if (!data.length) return;
+    const payload = data.join('\n');
+    data = [];
+    if (payload === '[DONE]') {
+      finished = true;
+      return;
+    }
+    try {
+      out += streamDelta(JSON.parse(payload));
+    } catch {
+      // A malformed event still counts as activity; ignore its content.
+    }
+  };
+  const takeLine = (rawLine) => {
+    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+    if (line === '') {
+      dispatch();
+      return;
+    }
+    if (line.startsWith('data:')) data.push(line.slice(5).replace(/^ /, ''));
+  };
+  try {
+    while (!finished) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      touch();
+      buffer += decoder.decode(value, { stream: true });
+      let nl;
+      while (!finished && (nl = buffer.indexOf('\n')) >= 0) {
+        takeLine(buffer.slice(0, nl));
+        buffer = buffer.slice(nl + 1);
+      }
+    }
+    if (!finished) {
+      if (buffer) takeLine(buffer);
+      dispatch();
+    }
+  } finally {
+    if (finished) {
+      try {
+        await reader.cancel();
+      } catch {
+        // Already closed.
+      }
+    }
+  }
+  return out;
+}
+
+async function httpPass(url, body, key, patience, deadline) {
+  const left = deadline - Date.now();
+  if (left <= 0) {
+    return { ok: false, transient: false, reason: `total patience ${secText(patience.totalSec)}s exceeded` };
+  }
+  const controller = new AbortController();
+  let firstTimer = null;
+  let idleTimer = null;
+  let totalTimer = null;
+  let timeoutReason = '';
+  let overTotal = false;
+  let touched = false;
+  const touch = () => {
+    if (!touched) {
+      touched = true;
+      if (firstTimer) {
+        clearTimeout(firstTimer);
+        firstTimer = null;
+      }
+    }
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      timeoutReason = `no stream activity for ${secText(patience.idleSec)}s`;
+      controller.abort();
+    }, patience.idleSec * 1000);
+  };
+  firstTimer = setTimeout(() => {
+    timeoutReason = `no first token within ${secText(patience.firstTokenSec)}s`;
+    controller.abort();
+  }, patience.firstTokenSec * 1000);
+  totalTimer = setTimeout(() => {
+    overTotal = true;
+    timeoutReason = `total patience ${secText(patience.totalSec)}s exceeded`;
+    controller.abort();
+  }, left);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + key },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      let raw = '';
+      try {
+        raw = await res.text();
+      } catch {
+        // The status alone is enough to report the failure.
+      }
+      return {
+        ok: false,
+        transient: httpTransientStatus(res.status),
+        retryAfterSec: res.status === 429 || res.status === 503 ? retryAfterSeconds(res) : null,
+        reason: `HTTP ${res.status}: ${redactText(raw, key).slice(0, 400)}`,
+      };
+    }
+    const type = String(res.headers.get('content-type') || '').toLowerCase();
+    if (type.includes('text/event-stream') && res.body) {
+      return { ok: true, out: await readSse(res.body, touch) };
+    }
+    const raw = await res.text();
+    let json;
+    try {
+      json = JSON.parse(raw);
+    } catch {
+      return { ok: false, transient: false, reason: `invalid JSON from provider: ${redactText(raw, key).slice(0, 200)}` };
+    }
+    return { ok: true, out: extractContent(json) };
+  } catch (e) {
+    if (timeoutReason) return { ok: false, transient: !overTotal, reason: timeoutReason };
+    const code = (e && e.cause && e.cause.code) || (e && e.code) || '';
+    const msg = String(code || (e && e.message) || e);
+    return { ok: false, transient: true, reason: `request failed: ${msg}` };
+  } finally {
+    if (firstTimer) clearTimeout(firstTimer);
+    if (idleTimer) clearTimeout(idleTimer);
+    if (totalTimer) clearTimeout(totalTimer);
+  }
+}
+
 async function httpAttempt(R, route, ctx) {
   const cfg = routerConfig(R, route.router) || {};
   const key = (cfg.keyEnv && process.env[cfg.keyEnv]) || '';
@@ -456,6 +674,7 @@ async function httpAttempt(R, route, ctx) {
       { role: 'system', content: ctx.write ? SYSTEM_WRITE : SYSTEM_READ },
       { role: 'user', content: ctx.userText() },
     ],
+    stream: true,
   };
   const debugFile = process.env.WORKER_DEBUG_PROMPT;
   if (debugFile) {
@@ -467,9 +686,9 @@ async function httpAttempt(R, route, ctx) {
     }
   }
 
-  const once = async () => {
-    const fake = process.env.WORKER_FAKE_HTTP;
-    if (fake) {
+  const fake = process.env.WORKER_FAKE_HTTP;
+  if (fake) {
+    const once = async () => {
       let fakeRes;
       try {
         fakeRes = readFakeHttp(fake);
@@ -481,44 +700,41 @@ async function httpAttempt(R, route, ctx) {
         return { ok: false, transient, reason: `HTTP ${fakeRes.status}: ${redactText(fakeRes.body, key).slice(0, 400)}` };
       }
       return { ok: true, out: fakeRes.body };
+    };
+    let result = await once();
+    if (!result.ok && result.transient) {
+      console.error(`[worker] route ${route.router} ${ctx.displayId} retry after ${oneLine(redactText(result.reason, key))} (${RETRY_DELAY_MS}ms)`);
+      await sleep(RETRY_DELAY_MS);
+      result = await once();
     }
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: 'Bearer ' + key },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(timeoutSec * 1000),
-      });
-      const raw = await res.text();
-      if (!res.ok) {
-        const transient = res.status === 429 || (res.status >= 500 && res.status < 600);
-        return { ok: false, transient, reason: `HTTP ${res.status}: ${redactText(raw, key).slice(0, 400)}` };
-      }
-      let json;
-      try {
-        json = JSON.parse(raw);
-      } catch {
-        return { ok: false, reason: `invalid JSON from provider: ${redactText(raw, key).slice(0, 200)}` };
-      }
-      return { ok: true, out: extractContent(json) };
-    } catch (e) {
-      const name = e && e.name;
-      const code = (e && e.cause && e.cause.code) || (e && e.code) || '';
-      const msg = String(code || (e && e.message) || e);
-      const timedOut = name === 'TimeoutError' || name === 'AbortError';
-      const transient = timedOut || /ECONNRESET|ETIMEDOUT/.test(msg);
-      const reason = timedOut ? `timed out after ${timeoutSec}s` : `request failed: ${msg}`;
-      return { ok: false, transient, reason };
-    }
-  };
-
-  let result = await once();
-  if (!result.ok && result.transient) {
-    console.error(`[worker] route ${route.router} ${ctx.displayId} retry after ${oneLine(redactText(result.reason, key))} (${RETRY_DELAY_MS}ms)`);
-    await sleep(RETRY_DELAY_MS);
-    result = await once();
+    return result;
   }
-  return result;
+
+  const patience = patienceConfig(R, route.router);
+  const deadline = Date.now() + patience.totalSec * 1000;
+  let last = { ok: false, transient: false, reason: 'no attempt made' };
+  for (let attempt = 1; attempt <= patience.attempts; attempt++) {
+    if (Date.now() >= deadline) {
+      last = { ok: false, transient: false, reason: `total patience ${secText(patience.totalSec)}s exceeded` };
+      break;
+    }
+    const res = await httpPass(url, body, key, patience, deadline);
+    if (res.ok) return res;
+    const reason = oneLine(redactText(res.reason, key));
+    const backoff = patience.backoffSec[Math.min(attempt - 1, patience.backoffSec.length - 1)];
+    const delay = res.retryAfterSec !== null && res.retryAfterSec !== undefined && res.retryAfterSec > backoff
+      ? res.retryAfterSec
+      : backoff;
+    const mayRetry = res.transient && attempt < patience.attempts && Date.now() + delay * 1000 < deadline;
+    if (!mayRetry) {
+      console.error(`[worker] route ${route.router} ${ctx.displayId} attempt ${attempt}/${patience.attempts} failed: ${reason}`);
+      return { ok: false, reason: res.reason, transient: res.transient };
+    }
+    console.error(`[worker] route ${route.router} ${ctx.displayId} attempt ${attempt}/${patience.attempts} failed: ${reason}; retry in ${secText(delay)}s`);
+    await sleep(delay * 1000);
+    last = res;
+  }
+  return { ok: false, reason: last.reason, transient: false };
 }
 
 // ---------------------------------------------------------------- child processes
