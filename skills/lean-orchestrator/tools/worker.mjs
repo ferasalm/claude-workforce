@@ -183,6 +183,31 @@ function fileExists(p) {
   }
 }
 
+// Windows: Node cannot spawn .cmd/.bat files without a shell (spawn EINVAL), and a shell would mangle the brief we
+// pass as an argument. So a .cmd/.bat shim is followed to the .exe it launches; extensionless files (POSIX shims
+// from npm) are skipped. A shim that only runs a script (npm's node shims) is skipped too; set OPENCODE_BIN/AGY_BIN.
+function shimExe(file) {
+  let text = '';
+  try { text = fs.readFileSync(file, 'utf8'); } catch { return null; }
+  const dir = path.dirname(file);
+  const expand = (s) => s
+    .replace(/%~dp0%?|%dp0%/gi, dir + path.sep)
+    .replace(/%([A-Za-z0-9_]+)%/g, (m, v) => process.env[v] || process.env[v.toUpperCase()] || m);
+  for (const m of text.matchAll(/"([^"\r\n]+?\.exe)"|(\S+?\.exe)\b/gi)) {
+    const p = path.normalize(expand(m[1] || m[2]));
+    if (path.isAbsolute(p) && fileExists(p)) return p;
+  }
+  return null;
+}
+
+function spawnable(p) {
+  if (process.platform !== 'win32') return p;
+  const ext = path.extname(p).toLowerCase();
+  if (ext === '.exe' || ext === '.com') return p;
+  if (ext === '.cmd' || ext === '.bat') return shimExe(p);
+  return null;
+}
+
 function which(name) {
   const dirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
   const isWin = process.platform === 'win32';
@@ -193,11 +218,9 @@ function which(name) {
   for (const d of dirs) {
     for (const ext of exts) {
       const candidate = path.join(d, name + ext);
-      if (fileExists(candidate)) return candidate;
-    }
-    if (isWin && !hasExt) {
-      const candidate = path.join(d, name);
-      if (fileExists(candidate)) return candidate;
+      if (!fileExists(candidate)) continue;
+      const usable = spawnable(candidate);
+      if (usable) return usable;
     }
   }
   return null;
@@ -215,12 +238,12 @@ function programPath(R, name, mode) {
   const envName = BIN_ENV[programKey(mode)];
   if (envName && process.env[envName]) {
     const p = process.env[envName];
-    return fileExists(p) ? p : null;
+    return fileExists(p) ? spawnable(p) : null;
   }
   const cfg = routerConfig(R, name);
   const bin = cfg && cfg.bin ? String(cfg.bin) : programKey(mode);
   if (path.isAbsolute(bin) || /^[A-Za-z]:/.test(bin) || bin.includes('/') || bin.includes('\\')) {
-    return fileExists(bin) ? bin : null;
+    return fileExists(bin) ? spawnable(bin) : null;
   }
   return which(bin);
 }
