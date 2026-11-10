@@ -1,0 +1,142 @@
+{
+  "version": 1,
+  "updated": "2026-11-10",
+  "how_to_edit": "This is the ONLY place that names models. Skills, agents and docs refer to kinds (trivial, scout-light, ...) and never to a model. Edit a pick list when data or the user changes a decision; run `node tools/worker.mjs route` to check the result. Each change gets one line in `changelog` below.",
+
+  "routers": {
+    "cloudflare": "Cloudflare Workers AI through OpenCode. Primary for GLM and DeepSeek. May be unavailable at any time.",
+    "openrouter": "OpenRouter through OpenCode. Fallback aggregator. ':free' models share about 50 requests a day. OpenCode holds this credential itself: no environment variable is needed for calls made through OpenCode.",
+    "agy": "Antigravity CLI (Gemini). Uses no Claude usage.",
+    "claude": "A Claude Code subagent defined in ~/.claude/agents. Uses plan usage. Only the lead can spawn it (non-Claude harnesses cannot)."
+  },
+
+  "models": {
+    "nemotron-free": {
+      "family": "nvidia",
+      "good_at": "boilerplate, trivial lookups, reformatting",
+      "weak_at": "judgement, long reasoning",
+      "speed": "fast",
+      "routes": [
+        { "router": "openrouter", "oc": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free" }
+      ]
+    },
+    "deepseek-flash": {
+      "family": "deepseek",
+      "good_at": "IQ ('left-brained'): code, structure, precision, specs, tests, review of logic",
+      "weak_at": "tone and narrative",
+      "speed": "fast",
+      "effort": "max",
+      "routes": [
+        { "router": "cloudflare", "oc": "cloudflare-workers-ai/@cf/deepseek-ai/deepseek-v4.1-flash-1017" },
+        { "router": "openrouter", "oc": "openrouter/deepseek/deepseek-v4.1-flash-1017" }
+      ]
+    },
+    "glm-flash": {
+      "family": "glm",
+      "good_at": "EQ ('right-brained'): prose, UX copy, docs voice, naming, narrative, empathy, design critique",
+      "weak_at": "speed",
+      "speed": "slow",
+      "routes": [
+        { "router": "cloudflare", "oc": "cloudflare-workers-ai/@cf/zai-org/glm-5.3-flash" },
+        { "router": "openrouter", "oc": "openrouter/z-ai/glm-5.3-flash" }
+      ]
+    },
+    "gemini-flash": {
+      "family": "gemini",
+      "good_at": "agent tasks with file access and web search, at low cost",
+      "weak_at": "about 20 s start-up",
+      "speed": "medium",
+      "routes": [
+        { "router": "agy", "agy": "gemini-3.8-flash" }
+      ]
+    }
+  },
+
+  "claude_agents": {
+    "scout-lite": { "model": "haiku", "effort": "medium", "file": "~/.claude/agents/scout-lite.md" },
+    "scout": { "model": "haiku", "effort": "xhigh", "file": "~/.claude/agents/scout.md" },
+    "builder": { "model": "haiku", "effort": "xhigh", "file": "~/.claude/agents/builder.md" },
+    "test-writer": { "model": "haiku", "effort": "max", "file": "~/.claude/agents/test-writer.md" },
+    "sub-orchestrator": { "model": "haiku", "effort": "max", "file": "~/.claude/agents/sub-orchestrator.md", "note": "runs this skill on one slice of a larger job" },
+    "sub-orchestrator-sonnet": { "model": "sonnet", "effort": "high", "file": "~/.claude/agents/sub-orchestrator-sonnet.md", "note": "only when the user asks for Sonnet" }
+  },
+
+  "kinds": {
+    "trivial": {
+      "tier": "0 and 1",
+      "use_when": "The brief holds all the input, or the answer is one stated fact: reformat a list, pull fields from pasted text, list or count files, find which files mention X, draft a commit message from a pasted diff. A wrong answer is cheap to spot.",
+      "not_for": "anything that feeds a decision, or needs judgement",
+      "picks": [
+        { "model": "nemotron-free" },
+        { "model": "gemini-flash", "effort": "low" },
+        { "claude": "scout-lite" }
+      ]
+    },
+    "scout-light": {
+      "tier": "2",
+      "use_when": "Mere fact-finding: where is X, what value does Y hold, which files do Z. No high-quality reasoning needed.",
+      "not_for": "conflicting evidence, or any answer a decision hangs on",
+      "picks": [
+        { "model": "gemini-flash", "effort": "low" },
+        { "model": "nemotron-free" }
+      ]
+    },
+    "scout-deep": {
+      "tier": "2",
+      "use_when": "The answer feeds a decision, needs QA or reasoning, or evidence may conflict: log reading, inventories that must be complete, documentation lookups with sources.",
+      "not_for": "edits",
+      "picks": [
+        { "model": "gemini-flash", "effort": "medium" },
+        { "claude": "scout" }
+      ]
+    },
+    "test-writer": {
+      "tier": "3a",
+      "use_when": "Writing the tests that define the pass condition, BEFORE the builder starts. Must be smarter than the builder, so two independent writers from different families both write tests from the spec only (never from the implementation); the lead merges them.",
+      "mode": "pair",
+      "lock": true,
+      "picks": [
+        { "claude": "test-writer" },
+        { "model": "deepseek-flash", "effort": "max" }
+      ],
+      "after": "Run `worker.mjs lock <test files>` before the builder starts and `worker.mjs verify` after. The builder's brief says: tests are read-only; a failing test means the code is wrong."
+    },
+    "builder-iq": {
+      "tier": "3b",
+      "use_when": "Correctness, structure and precision matter more than tone: code, scripts, configs, refactors, data transforms, algorithms.",
+      "write": true,
+      "picks": [
+        { "model": "deepseek-flash", "effort": "max" },
+        { "claude": "builder" },
+        { "model": "gemini-flash", "effort": "high" }
+      ],
+      "review_with": "builder-eq"
+    },
+    "builder-eq": {
+      "tier": "3b",
+      "use_when": "The reader's experience matters more than the logic: UX copy, docs voice, narrative, naming, empathy, design critique.",
+      "write": true,
+      "picks": [
+        { "model": "glm-flash" },
+        { "claude": "builder" }
+      ],
+      "review_with": "builder-iq"
+    }
+  },
+
+  "review": {
+    "rule": "Every builder result gets a reviewer of the same tier and a different model family. Nice, not required: let EQ review IQ work and IQ review EQ work. The reviewer is read-only and receives the diff and the pass condition, never the builder's reasoning. The implementer never reviews its own work.",
+    "pairs": { "builder-iq": "builder-eq", "builder-eq": "builder-iq" }
+  },
+
+  "fallback_rules": [
+    "Inside one pick: try its routes in order (cloudflare, then openrouter). A route fails on a non-zero exit, empty output, a timeout, a rate limit or a missing key.",
+    "When every route of a pick fails: take the next pick in the list.",
+    "A pick that is a Claude agent cannot be run by worker.mjs. It prints the agent to spawn (exit code 3) and the lead spawns it with the model and effort stated in claude_agents.",
+    "When the last pick fails: go up exactly one tier (see the escalation rule in SKILL.md)."
+  ],
+
+  "changelog": [
+    "2026-11-10: first version. Picks set by the user: trivial, scout-light, scout-deep, test-writer, builder-iq, builder-eq."
+  ]
+}
