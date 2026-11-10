@@ -1,0 +1,4 @@
+node_modules/
+*.out.txt
+.test-lock.json
+.DS_Store
