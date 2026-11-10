@@ -1,6 +1,6 @@
 # Providers
 
-claude-workforce reaches workers through routers. A router is a way to reach models: an API (type `http`) or a program on your PATH. A route is one model reached through one router. All routing lives in `~/.claude/skills/lean-orchestrator/routing.json`. Each router names an env variable (`keyEnv`) and a signup URL. This project never writes a key value anywhere: you set the variable yourself. Everywhere below, `<your key>` is a placeholder.
+claude-workforce reaches workers through routers. A router is a way to reach models: an API (type `http`), a program on your PATH (type `program`), or a command-line program described by data (type `cli`, see the last section). A route is one model reached through one router. All routing lives in `~/.claude/skills/lean-orchestrator/routing.json`. Each router names an env variable (`keyEnv`) and a signup URL. This project never writes a key value anywhere: you set the variable yourself. Everywhere below, `<your key>` is a placeholder.
 
 Check what works on your machine:
 
@@ -17,6 +17,8 @@ It prints one line per router: `READY`, `TOO OLD` (an OpenCode 1 binary), `NO KE
 | `cloudflare` | http | `CLOUDFLARE_API_TOKEN` (+ `CLOUDFLARE_ACCOUNT_ID`) | `https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/v1` |
 | `agy` | program | none | the `agy` CLI |
 | `opencode` | program | none | OpenCode 2 (`opencode2`, then `opencode`) |
+| `codex` | cli | none (sign in once with `codex login`) | the `codex` program (OpenAI Codex CLI) |
+| `hermes` | cli | none (sign in once with `hermes model`) | the `hermes` program (Nous Hermes Agent) |
 | `claude` | agents | none | your pinned Claude agents |
 
 ## NVIDIA NIM
@@ -37,11 +39,11 @@ It prints one line per router: `READY`, `TOO OLD` (an OpenCode 1 binary), `NO KE
 
 ## OpenRouter
 
-- **What is free:** `:free` model ids only. 50 requests/day for accounts that bought less than $10 of credits; 1,000/day with $10 or more. There is no free DeepSeek V4.1 Flash on OpenRouter.
+- **What is free:** `:free` model ids only. Models whose id ends in `:free` share 20 requests a minute and 50 a day; 1,000 a day once the account has bought 10 USD of credits (a one-time purchase). This is the cheapest upgrade in the whole setup. Source: https://openrouter.ai/docs/api-reference/limits. There is no free DeepSeek V4.1 Flash on OpenRouter.
 - **Signup:** https://openrouter.ai/keys.
 - **Env var:** `OPENROUTER_API_KEY`.
 - **Base URL:** `https://openrouter.ai/api/v1`.
-- **Model ids used in routing.json:** `nvidia/nemotron-3-ultra-550b-a55b:free`, `z-ai/glm-5.3-flash:free` (about 50 requests a day without credits), plus paid later routes `z-ai/glm-5.3-flash` and `deepseek/deepseek-v4.1-flash-1017`.
+- **Model ids used in routing.json:** `nvidia/nemotron-3-ultra-550b-a55b:free`, `z-ai/glm-5.3-flash:free` (about 50 requests a day without credits), `nvidia/nemotron-3.5-super-vl:free` (Nemotron 3.5 Super VL), `cohere/north-mini-code:free` (North Mini Code), plus paid later routes `z-ai/glm-5.3-flash` and `deepseek/deepseek-v4.1-flash-1017`.
 
 ## Antigravity CLI (agy)
 
@@ -51,6 +53,24 @@ It prints one line per router: `READY`, `TOO OLD` (an OpenCode 1 binary), `NO KE
 - **How it is called:** headless, `agy -p "<prompt>"`: runs one prompt, prints the result to stdout, and exits immediately.
 - **Model ids used in routing.json:** `gemini-3.8-flash`.
 - **Notes:** it has web search and can read files, so it is the file-reading scout. Start-up takes about 20 seconds.
+
+## OpenAI Codex CLI (`codex`)
+
+- **Cost:** no API key. It uses the Codex allowance of your ChatGPT plan. OpenAI does not publish the limits, and which plans include the CLI can change.
+- **Install:** `npm i -g @openai/codex`, then `codex login`.
+- **Env var:** none. `CODEX_BIN` (optional) points at a specific binary.
+- **How it is called:** `codex exec` with the brief on standard input. Scouts run with `-s read-only` and live web search on. Builders run with `-s workspace-write` and `-C` set to the worktree, so writes stay inside it. The operating system enforces the sandbox. On Windows the sandbox setting lives in your Codex config.
+- **Model ids used in routing.json:** `gpt-6-luna` (alias `gpt-luna`).
+- **Notes:** about 20 to 50 seconds per call. Measured: one of three write runs lost its tool host and wrote nothing; the worker's "no files changed" check turns that into a failed route.
+
+## Nous Hermes Agent (`hermes`)
+
+- **Cost:** the free models of Nous Portal, which rotate. The free tier allows 50 requests a minute.
+- **Install:** install Hermes Agent, then run `hermes model` to sign in to Nous Portal.
+- **Env var:** none. `HERMES_BIN` (optional) points at a specific binary.
+- **How it is called:** `hermes chat --query-file <brief>` with `--oneshot` and `--provider nous`, using one harmless toolset (`todo`). It has no terminal and no file tools, so it is text-only and never writes. Files named with `--files` are packed into the prompt.
+- **Model ids used in routing.json:** `meituan/longcat-2.5:free` (alias `longcat-free`). Nous announced it as free for one week from 2026-11-06, so it is a temporary offer. When the id stops answering, the route fails and the ladder moves on.
+- **Notes:** measured 17 seconds for a small brief. Nous may keep prompts unless Privacy Mode is on.
 
 ## Cloudflare Workers AI
 
@@ -114,3 +134,30 @@ node ~/.claude/skills/lean-orchestrator/tools/worker.mjs ask my-model brief.txt 
 An HTTP 400 or 404 usually means the model id is wrong: look up the exact id in the provider's model list, fix `id` in `routing.json`, and run it again. Add a line to the `changelog` in `routing.json` for your edit.
 
 Never paste a real key into a file, a chat or a screenshot: everything above uses `<your key>` as the placeholder.
+
+## Command-line harnesses: the `cli` router type
+
+A router with `"type": "cli"` runs a command-line program once per call; its fields are data, so a new program needs no code; `routers.codex` and `routers.hermes` in routing.json are the two real examples, so copy from them.
+
+| Field | Meaning |
+|---|---|
+| `bin` | the program: one name or path, or a list tried in order. `${NAME}` is filled from the environment |
+| `binEnv` | an environment variable that overrides `bin` |
+| `args` | the arguments of a read-only run |
+| `writeArgs` | the arguments of a run that may write. A router without `writeArgs` is read-only, and builder kinds skip it |
+| `stdin` | `true`: the prompt is sent on standard input |
+| `defaultEffort` | the default effort |
+| `slots` | how many runs at once (default 1) |
+| `fileAccess` | `false`: the program cannot see files. `--files` are packed into the prompt and the router never writes |
+| `strip` | patterns removed from the answer |
+
+| Placeholder | Filled with |
+|---|---|
+| `{id}` | the model id |
+| `{effort}` | the effort |
+| `{dir}` | the working folder |
+| `{brief}` | the prompt text |
+| `{briefFile}` | a temporary file holding the prompt |
+| `{out}` | a temporary file the program writes its final answer to |
+
+On Windows, an npm `.cmd` shim that starts a script with node is followed automatically.

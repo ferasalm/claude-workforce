@@ -12,9 +12,15 @@ All numbers in this file come from [Artificial Analysis](https://artificialanaly
 | [GLM-5.3 (Max)](https://artificialanalysis.ai/models/glm-5-3) | 32 | 1.40 | 4.40 | 67 | — (the workforce uses GLM-5.3-Flash) | [link](https://artificialanalysis.ai/models/glm-5-3) |
 | [Gemini 3.8 Flash (High)](https://artificialanalysis.ai/models/gemini-3-8-flash) | 31 | 0.75 | 3.75 | 112 | file-reading scout | [link](https://artificialanalysis.ai/models/gemini-3-8-flash) |
 | [GLM-5.3-Flash](https://artificialanalysis.ai/models/glm-5-3-flash) | 28 | 0.15 | 0.50 | 49 | EQ builder (prose, UX copy, naming) | [link](https://artificialanalysis.ai/models/glm-5-3-flash) |
+| [GPT-6 Luna (max effort)](https://artificialanalysis.ai/models/gpt-6-luna) | 28 | 0.10 | 0.50 | 104 | sandboxed fallback agent (Codex CLI) | [link](https://artificialanalysis.ai/models/gpt-6-luna) |
+| [Nemotron 3.5 Super VL](https://artificialanalysis.ai/models/nemotron-3-5-super-vl) | 14 | 0.17 | 0.50 | 257 | trivial jobs, long input, images | [link](https://artificialanalysis.ai/models/nemotron-3-5-super-vl) |
 | [Nemotron 3 Ultra 550B A55B (Reasoning)](https://artificialanalysis.ai/models/nvidia-nemotron-3-ultra-550b-a55b) | 12 | 0.60 | 2.70 | 191 | trivial jobs only | [link](https://artificialanalysis.ai/models/nvidia-nemotron-3-ultra-550b-a55b) |
+| [North Mini Code](https://artificialanalysis.ai/models/north-mini-code) | 3 | free | free | 165 | code-shaped trivial jobs | [link](https://artificialanalysis.ai/models/north-mini-code) |
+| LongCat 2.5 | not listed | n/a | n/a | n/a | text-only fallback (Hermes Agent) | not on Artificial Analysis on 2026-11-10 |
 
 \* The DeepSeek V4.1 Flash main page shows N/A for the index. The 33 comes from its 1017 checkpoint page. Its prices and speed matched across both pages.
+
+GPT-6 Luna's index (28) is its max-effort score; it scores lower at lower effort settings. That is why it is a fallback builder checked by locked tests and never a test writer, because a test writer must be at least as strong as the builder it checks.
 
 ## Read this table honestly
 

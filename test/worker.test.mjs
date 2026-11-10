@@ -85,7 +85,7 @@ describe('worker.mjs routing', () => {
       const want = `${kind}\t${k.tier}\t${k.picks.map((p) => pickLabel(V2, p)).join(' | ')}`;
       assert.ok(lines.includes(want), `missing route line: ${want}\n${r.stdout}`);
     }
-    const want = 'builder-iq\t3b\tdeepseek-flash(max) via opencode>opencode>nvidia>cloudflare>openrouter | claude:builder (haiku xhigh) | gemini-flash(high) via agy';
+    const want = 'builder-iq\t3b\tdeepseek-flash(max) via opencode>opencode>nvidia>cloudflare>openrouter | gpt-luna(max) via codex | claude:builder (haiku xhigh) | gemini-flash(high) via agy';
     const d = run(['route', 'builder-iq']);
     assert.equal(d.status, 0, d.all);
     assert.equal(d.stdout.split('\n')[0], want);
